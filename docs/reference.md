@@ -304,6 +304,8 @@ type Client interface {
     ReceiveMessages(ctx context.Context) <-chan Message
     ReceiveResponse(ctx context.Context) MessageIterator
     Interrupt(ctx context.Context) error
+    StopTask(ctx context.Context, taskID string) error
+    BackgroundTasks(ctx context.Context, toolUseID string) (bool, error)
     SetModel(ctx context.Context, model *string) error
     SetPermissionMode(ctx context.Context, mode PermissionMode) error
     RewindFiles(ctx context.Context, messageUUID string) error
@@ -380,6 +382,30 @@ next `Query`. Only available in streaming mode.
 ```go
 func (c *ClientImpl) Interrupt(ctx context.Context) error
 ```
+
+#### `StopTask()`
+
+Stop one running task (for example a subagent) by the `TaskID` of its `TaskStartedMessage`. The CLI
+reports the outcome with a `TaskNotificationMessage` whose `Status` is
+`TaskNotificationStatusStopped`; the rest of the turn continues.
+
+```go
+func (c *ClientImpl) StopTask(ctx context.Context, taskID string) error
+```
+
+#### `BackgroundTasks()`
+
+Move in-flight foreground tasks (Bash commands and subagents) to the background, so the blocking tool
+calls return and the turn continues. A non-empty `toolUseID` targets only the task started by that
+`tool_use` block. Returns `false` only when `toolUseID` matched no foreground task.
+
+```go
+func (c *ClientImpl) BackgroundTasks(ctx context.Context, toolUseID string) (bool, error)
+```
+
+Task lifecycle messages arrive on the normal message stream as `*TaskStartedMessage`,
+`*TaskProgressMessage`, `*TaskUpdatedMessage` and `*TaskNotificationMessage` (all with
+`Type() == "system"`); other system subtypes remain `*SystemMessage`.
 
 #### `SetModel()`
 
@@ -2105,6 +2131,8 @@ type Transport interface {
     SendMessage(ctx context.Context, message StreamMessage) error
     ReceiveMessages(ctx context.Context) (<-chan Message, <-chan error)
     Interrupt(ctx context.Context) error
+    StopTask(ctx context.Context, taskID string) error
+    BackgroundTasks(ctx context.Context, toolUseID string) (bool, error)
     SetModel(ctx context.Context, model *string) error
     SetPermissionMode(ctx context.Context, mode string) error
     RewindFiles(ctx context.Context, userMessageID string) error

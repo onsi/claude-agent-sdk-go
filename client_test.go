@@ -1095,6 +1095,11 @@ type clientMockTransport struct {
 	rewindFilesError       error
 	getMcpStatusError      error
 	getMcpStatusResponse   *McpStatusResponse
+	taskError              error
+
+	stoppedTaskIDs       []string
+	backgroundToolUseIDs []string
+	backgrounded         bool
 }
 
 func (c *clientMockTransport) Connect(ctx context.Context) error {
@@ -1180,6 +1185,20 @@ func (c *clientMockTransport) Interrupt(_ context.Context) error {
 		return c.interruptError
 	}
 	return nil
+}
+
+func (c *clientMockTransport) StopTask(_ context.Context, taskID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.stoppedTaskIDs = append(c.stoppedTaskIDs, taskID)
+	return c.taskError
+}
+
+func (c *clientMockTransport) BackgroundTasks(_ context.Context, toolUseID string) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.backgroundToolUseIDs = append(c.backgroundToolUseIDs, toolUseID)
+	return c.backgrounded, c.taskError
 }
 
 func (c *clientMockTransport) Close() error {

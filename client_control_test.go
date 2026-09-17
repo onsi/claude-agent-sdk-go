@@ -14,9 +14,9 @@ import (
 
 // controlStubCLI is a streaming-mode `claude` stand-in. It appends every stdin
 // line to log, answers every control request with success, and records
-// "SIGINT" in log if it is ever sent SIGINT. Interrupt ends the running turn with
-// a result; a user message containing "long" starts a turn that only an
-// interrupt ends; any other user message is answered in full.
+// "SIGINT" in log if it is ever sent SIGINT. A user message containing "spawn"
+// starts task-1; stop_task finishes it as stopped; interrupt ends the running
+// turn with a result; any other user message is answered in full.
 const controlStubCLI = `#!/bin/bash
 if [ "$1" = "-v" ]; then echo "3.0.0"; exit 0; fi
 log=%q
@@ -29,9 +29,13 @@ while IFS= read -r line; do
       req_id=$(printf '%%s' "$line" | grep -o '"request_id":"[^"]*"' | cut -d'"' -f4)
       printf '{"type":"control_response","response":{"subtype":"success","request_id":"%%s","response":{}}}\n' "$req_id"
       case "$line" in
+        *'"subtype":"stop_task"'*)
+          printf '%%s\n' '{"type":"system","subtype":"task_notification","task_id":"task-1","tool_use_id":"toolu_1","status":"stopped","output_file":"","summary":"stopped","uuid":"u2","session_id":"s1"}' ;;
         *'"subtype":"interrupt"'*)
           printf '%%s\n' "$result" ;;
       esac ;;
+    *'"type":"user"'*spawn*)
+      printf '%%s\n' '{"type":"system","subtype":"task_started","task_id":"task-1","tool_use_id":"toolu_1","description":"research","subagent_type":"general-purpose","is_backgrounded":false,"spawn_depth":1,"uuid":"u1","session_id":"s1"}' ;;
     *'"type":"user"'*long*)
       printf '%%s\n' '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"working"}],"model":"stub"}}' ;;
     *'"type":"user"'*)
@@ -130,5 +134,112 @@ func TestClientInterruptKeepsSessionAlive(t *testing.T) {
 
 	if log := stubStdinLog(t, logPath); strings.Contains(log, "SIGINT") {
 		t.Errorf("CLI process received SIGINT; stdin log:\n%s", log)
+	}
+}
+
+func TestClientStopTask(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	client, msgs, logPath := connectControlStubClient(ctx, t)
+
+	if err := client.Query(ctx, "spawn a subagent"); err != nil {
+		t.Fatalf("Query: %v", err)
+	}
+	started := awaitMessage[*TaskStartedMessage](t, msgs)
+	if started.TaskID != "task-1" || started.SubagentType == nil || *started.SubagentType != "general-purpose" {
+		t.Fatalf("unexpected TaskStartedMessage: %+v", started)
+	}
+
+	if err := client.StopTask(ctx, started.TaskID); err != nil {
+		t.Fatalf("StopTask: %v", err)
+	}
+	notification := awaitMessage[*TaskNotificationMessage](t, msgs)
+	if notification.TaskID != "task-1" || notification.Status != TaskNotificationStatusStopped {
+		t.Errorf("unexpected TaskNotificationMessage: %+v", notification)
+	}
+
+	log := stubStdinLog(t, logPath)
+	if !strings.Contains(log, `"request":{"subtype":"stop_task","task_id":"task-1"}`) {
+		t.Errorf("no stop_task control request was written; stdin log:\n%s", log)
+	}
+}
+
+func TestClientBackgroundTasks(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	client, _, logPath := connectControlStubClient(ctx, t)
+
+	backgrounded, err := client.BackgroundTasks(ctx, "toolu_1")
+	if err != nil {
+		t.Fatalf("BackgroundTasks: %v", err)
+	}
+	if !backgrounded {
+		t.Error("BackgroundTasks = false, want true for a success response without the field")
+	}
+	if _, err := client.BackgroundTasks(ctx, ""); err != nil {
+		t.Fatalf("BackgroundTasks(all): %v", err)
+	}
+
+	log := stubStdinLog(t, logPath)
+	for _, want := range []string{
+		`"request":{"subtype":"background_tasks","tool_use_id":"toolu_1"}`,
+		`"request":{"subtype":"background_tasks"}`,
+	} {
+		if !strings.Contains(log, want) {
+			t.Errorf("stdin log missing %s:\n%s", want, log)
+		}
+	}
+}
+
+func TestClientTaskMethodsDelegateToTransport(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	transport := newClientMockTransport()
+	transport.backgrounded = true
+	client := setupClientForTest(t, transport)
+	defer disconnectClientSafely(t, client)
+	connectClientSafely(ctx, t, client)
+
+	if err := client.StopTask(ctx, "task-9"); err != nil {
+		t.Fatalf("StopTask: %v", err)
+	}
+	got, err := client.BackgroundTasks(ctx, "toolu_9")
+	if err != nil || !got {
+		t.Fatalf("BackgroundTasks = %v, %v", got, err)
+	}
+	if len(transport.stoppedTaskIDs) != 1 || transport.stoppedTaskIDs[0] != "task-9" {
+		t.Errorf("stoppedTaskIDs = %v", transport.stoppedTaskIDs)
+	}
+	if len(transport.backgroundToolUseIDs) != 1 || transport.backgroundToolUseIDs[0] != "toolu_9" {
+		t.Errorf("backgroundToolUseIDs = %v", transport.backgroundToolUseIDs)
+	}
+
+	transport.taskError = errors.New("task control failed")
+	if err := client.StopTask(ctx, "task-9"); err == nil || !strings.Contains(err.Error(), "task control failed") {
+		t.Errorf("StopTask error = %v", err)
+	}
+	if _, err := client.BackgroundTasks(ctx, ""); err == nil {
+		t.Error("BackgroundTasks should propagate the transport error")
+	}
+}
+
+func TestClientTaskMethodsRequireConnection(t *testing.T) {
+	ctx := context.Background()
+	client := NewClientWithTransport(newClientMockTransport())
+
+	if err := client.StopTask(ctx, "task-1"); err == nil || !strings.Contains(err.Error(), "not connected") {
+		t.Errorf("StopTask before Connect: %v", err)
+	}
+	if _, err := client.BackgroundTasks(ctx, ""); err == nil || !strings.Contains(err.Error(), "not connected") {
+		t.Errorf("BackgroundTasks before Connect: %v", err)
+	}
+
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := client.StopTask(cancelled, "task-1"); !errors.Is(err, context.Canceled) {
+		t.Errorf("StopTask with cancelled context: %v", err)
 	}
 }

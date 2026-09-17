@@ -26,6 +26,12 @@ type Transport interface {
     // session connected.
     Interrupt(ctx context.Context) error
 
+    // StopTask stops a single running task by the ID from a TaskStartedMessage.
+    StopTask(ctx context.Context, taskID string) error
+
+    // BackgroundTasks moves in-flight foreground tasks to the background.
+    BackgroundTasks(ctx context.Context, toolUseID string) (bool, error)
+
     // SetModel changes the AI model during a streaming session.
     // Pass nil to reset to default model.
     SetModel(ctx context.Context, model *string) error
@@ -252,6 +258,8 @@ type Client interface {
 
     // Control operations
     Interrupt(ctx context.Context) error
+    StopTask(ctx context.Context, taskID string) error
+    BackgroundTasks(ctx context.Context, toolUseID string) (bool, error)
     SetModel(ctx context.Context, model *string) error
     SetPermissionMode(ctx context.Context, mode PermissionMode) error
     RewindFiles(ctx context.Context, messageUUID string) error
@@ -280,6 +288,8 @@ type Client interface {
 
 **Control Operations**
 - `Interrupt()` - Stop the current turn; the session stays connected
+- `StopTask()` - Stop one running task (e.g. a subagent)
+- `BackgroundTasks()` - Move foreground tasks to the background
 - `SetModel()` - Change AI model mid-session
 - `SetPermissionMode()` - Change permission handling
 - `RewindFiles()` - Revert files to checkpoint

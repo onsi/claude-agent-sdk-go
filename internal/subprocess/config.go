@@ -110,6 +110,28 @@ func (t *Transport) Interrupt(ctx context.Context) error {
 	return protocol.Interrupt(ctx)
 }
 
+// StopTask stops the running task identified by taskID, as reported by a
+// task_started system message. The CLI confirms with a task_notification whose
+// status is "stopped".
+func (t *Transport) StopTask(ctx context.Context, taskID string) error {
+	protocol, err := t.controlProtocol("StopTask")
+	if err != nil {
+		return err
+	}
+	return protocol.StopTask(ctx, taskID)
+}
+
+// BackgroundTasks moves in-flight foreground tasks to the background; with a
+// non-empty toolUseID only the task started by that tool_use block is moved.
+// It reports whether any task was backgrounded.
+func (t *Transport) BackgroundTasks(ctx context.Context, toolUseID string) (bool, error) {
+	protocol, err := t.controlProtocol("BackgroundTasks")
+	if err != nil {
+		return false, err
+	}
+	return protocol.BackgroundTasks(ctx, toolUseID)
+}
+
 // SetModel changes the AI model during a streaming session.
 // This method requires control protocol integration which is only available
 // in streaming mode (when closeStdin is false).

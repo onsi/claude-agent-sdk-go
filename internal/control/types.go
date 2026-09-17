@@ -34,6 +34,10 @@ const (
 	SubtypeMcpMessage = "mcp_message"
 	// SubtypeRewindFiles requests file rewind to a specific user message state.
 	SubtypeRewindFiles = "rewind_files"
+	// SubtypeStopTask stops a single running task.
+	SubtypeStopTask = "stop_task"
+	// SubtypeBackgroundTasks moves in-flight foreground tasks to the background.
+	SubtypeBackgroundTasks = "background_tasks"
 )
 
 // Response subtype constants for control responses.
@@ -123,6 +127,24 @@ type RewindFilesRequest struct {
 	// UserMessageID is the UUID of the user message to rewind to.
 	// This should be obtained from UserMessage.UUID received during the session.
 	UserMessageID string `json:"user_message_id"`
+}
+
+// StopTaskRequest stops the running task identified by TaskID.
+type StopTaskRequest struct {
+	// Subtype is always SubtypeStopTask.
+	Subtype string `json:"subtype"`
+	// TaskID is the task_id from a task_started system message.
+	TaskID string `json:"task_id"`
+}
+
+// BackgroundTasksRequest moves in-flight foreground tasks (Bash commands and
+// subagents) to the background.
+type BackgroundTasksRequest struct {
+	// Subtype is always SubtypeBackgroundTasks.
+	Subtype string `json:"subtype"`
+	// ToolUseID targets the single task started by that tool_use block.
+	// When empty, every foreground task is backgrounded.
+	ToolUseID string `json:"tool_use_id,omitempty"`
 }
 
 // PermissionUpdateType specifies the type of permission update.

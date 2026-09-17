@@ -51,6 +51,25 @@ type RateLimitEventMessage = shared.RateLimitEventMessage
 // RateLimitInfo is the window state carried by RateLimitEventMessage.
 type RateLimitInfo = shared.RateLimitInfo
 
+// TaskStartedMessage announces a new task (for example a subagent). Its TaskID
+// is the handle Client.StopTask takes.
+type TaskStartedMessage = shared.TaskStartedMessage
+
+// TaskProgressMessage reports a running task's progress.
+type TaskProgressMessage = shared.TaskProgressMessage
+
+// TaskUpdatedMessage reports a change to a task's state.
+type TaskUpdatedMessage = shared.TaskUpdatedMessage
+
+// TaskUpdatePatch holds the task fields a TaskUpdatedMessage changed.
+type TaskUpdatePatch = shared.TaskUpdatePatch
+
+// TaskNotificationMessage reports that a task has finished.
+type TaskNotificationMessage = shared.TaskNotificationMessage
+
+// TaskUsage is the running cost of a task.
+type TaskUsage = shared.TaskUsage
+
 // MessageIterator provides iteration over messages.
 type MessageIterator = shared.MessageIterator
 
@@ -79,6 +98,18 @@ const (
 
 	// Session heartbeat carrying rate-limit window state.
 	MessageTypeRateLimitEvent = shared.MessageTypeRateLimitEvent
+)
+
+// Re-export task lifecycle system message subtypes and terminal statuses.
+const (
+	SystemSubtypeTaskStarted      = shared.SystemSubtypeTaskStarted
+	SystemSubtypeTaskProgress     = shared.SystemSubtypeTaskProgress
+	SystemSubtypeTaskUpdated      = shared.SystemSubtypeTaskUpdated
+	SystemSubtypeTaskNotification = shared.SystemSubtypeTaskNotification
+
+	TaskNotificationStatusCompleted = shared.TaskNotificationStatusCompleted
+	TaskNotificationStatusFailed    = shared.TaskNotificationStatusFailed
+	TaskNotificationStatusStopped   = shared.TaskNotificationStatusStopped
 )
 
 // Rate-limit window status constants.
@@ -137,6 +168,12 @@ type Transport interface {
 	// Interrupt stops the current turn via the control protocol, leaving the
 	// session connected.
 	Interrupt(ctx context.Context) error
+	// StopTask stops a single running task by the ID from a TaskStartedMessage.
+	StopTask(ctx context.Context, taskID string) error
+	// BackgroundTasks moves in-flight foreground tasks to the background; with a
+	// non-empty toolUseID only that tool_use block's task. It reports whether
+	// any task was backgrounded.
+	BackgroundTasks(ctx context.Context, toolUseID string) (bool, error)
 	// SetModel changes the AI model during streaming session.
 	SetModel(ctx context.Context, model *string) error
 	// SetPermissionMode changes the permission mode during streaming session.
@@ -175,6 +212,12 @@ type InitializeResponse = control.InitializeResponse
 
 // InterruptRequest to interrupt current operation via control protocol.
 type InterruptRequest = control.InterruptRequest
+
+// StopTaskRequest to stop a single task via control protocol.
+type StopTaskRequest = control.StopTaskRequest
+
+// BackgroundTasksRequest to background foreground tasks via control protocol.
+type BackgroundTasksRequest = control.BackgroundTasksRequest
 
 // SetPermissionModeRequest to change permission mode via control protocol.
 type SetPermissionModeRequest = control.SetPermissionModeRequest
@@ -239,6 +282,8 @@ const (
 	SubtypeMcpMessage        = control.SubtypeMcpMessage
 	SubtypeGetMcpStatus      = control.SubtypeGetMcpStatus
 	SubtypeRewindFiles       = control.SubtypeRewindFiles
+	SubtypeStopTask          = control.SubtypeStopTask
+	SubtypeBackgroundTasks   = control.SubtypeBackgroundTasks
 
 	// Control response subtypes
 	ResponseSubtypeSuccess = control.ResponseSubtypeSuccess

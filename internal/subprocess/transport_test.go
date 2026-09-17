@@ -701,12 +701,67 @@ func TestTransportControlProtocolIntegration(t *testing.T) {
 			errSubstr: "Interrupt not available in one-shot mode",
 		},
 		{
+			name: "StopTask_requires_streaming_mode",
+			setup: func() *Transport {
+				return NewWithPrompt(newTransportMockCLI(), &shared.Options{}, "test prompt")
+			},
+			operation: func(ctx context.Context, t *Transport) error {
+				return t.StopTask(ctx, "task-1")
+			},
+			wantErr:   true,
+			errSubstr: "StopTask not available in one-shot mode",
+		},
+		{
+			name: "BackgroundTasks_requires_streaming_mode",
+			setup: func() *Transport {
+				return NewWithPrompt(newTransportMockCLI(), &shared.Options{}, "test prompt")
+			},
+			operation: func(ctx context.Context, t *Transport) error {
+				_, err := t.BackgroundTasks(ctx, "")
+				return err
+			},
+			wantErr:   true,
+			errSubstr: "BackgroundTasks not available in one-shot mode",
+		},
+		{
+			name: "StopTask_requires_connection",
+			setup: func() *Transport {
+				return setupTransportForTest(t, newTransportMockCLI())
+			},
+			operation: func(ctx context.Context, t *Transport) error {
+				return t.StopTask(ctx, "task-1")
+			},
+			wantErr:   true,
+			errSubstr: "not connected",
+		},
+		{
 			name: "Interrupt_in_streaming_mode_with_protocol",
 			setup: func() *Transport {
 				return setupTransportForTest(t, newTransportMockCLIWithControlProtocol())
 			},
 			operation: func(ctx context.Context, t *Transport) error {
 				return t.Interrupt(ctx)
+			},
+			skipWindows: true,
+		},
+		{
+			name: "StopTask_in_streaming_mode_with_protocol",
+			setup: func() *Transport {
+				return setupTransportForTest(t, newTransportMockCLIWithControlProtocol())
+			},
+			operation: func(ctx context.Context, t *Transport) error {
+				return t.StopTask(ctx, "task-1")
+			},
+			skipWindows: true,
+		},
+		{
+			name: "BackgroundTasks_in_streaming_mode_with_protocol",
+			setup: func() *Transport {
+				return setupTransportForTest(t, newTransportMockCLIWithControlProtocol())
+			},
+			operation: func(ctx context.Context, t *Transport) error {
+				_, err := t.BackgroundTasks(ctx, "toolu_1")
+				return err
 			},
 			skipWindows: true,
 		},
