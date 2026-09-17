@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -11,14 +12,16 @@ import (
 	"github.com/severity1/claude-agent-sdk-go/internal/shared"
 )
 
-// handleStdout processes stdout in a separate goroutine
-func (t *Transport) handleStdout() {
+// handleStdout processes stdout in a separate goroutine. After a clean EOF it
+// keeps the channels open until the child has been reaped, so a consumer that
+// sees them close can read the exit status from Err.
+func (t *Transport) handleStdout(stdout io.Reader, proc *process) {
 	defer t.wg.Done()
 	defer close(t.msgChan)
 	defer close(t.errChan)
 	defer t.validator.MarkStreamEnd() // Mark stream end for validation
 
-	scanner := bufio.NewScanner(t.stdout)
+	scanner := bufio.NewScanner(stdout)
 
 	// Scanner token size must match the parser's buffer limit so lines aren't
 	// truncated before parsing. Default is 64KB; respect MaxBufferSize if set.
@@ -86,21 +89,32 @@ func (t *Transport) handleStdout() {
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
+	t.endStdout(scanner.Err(), proc)
+}
+
+// endStdout reports a scanner failure, or after a clean EOF waits for the
+// child to be reaped.
+func (t *Transport) endStdout(scanErr error, proc *process) {
+	if scanErr != nil {
 		select {
-		case t.errChan <- fmt.Errorf("stdout scanner error: %w", err):
+		case t.errChan <- fmt.Errorf("stdout scanner error: %w", scanErr):
 		case <-t.ctx.Done():
 		}
+		return
+	}
+	select {
+	case <-proc.done:
+	case <-t.ctx.Done():
 	}
 }
 
 // handleStderrCallback processes stderr in a separate goroutine.
 // Reads line-by-line, strips trailing whitespace, skips empty lines, and
 // silently ignores scanner errors.
-func (t *Transport) handleStderrCallback() {
+func (t *Transport) handleStderrCallback(stderr io.Reader) {
 	defer t.wg.Done()
 
-	scanner := bufio.NewScanner(t.stderrPipe)
+	scanner := bufio.NewScanner(stderr)
 
 	for scanner.Scan() {
 		select {
@@ -158,11 +172,12 @@ func (t *Transport) setupStderr() error {
 	switch {
 	case t.options != nil && t.options.StderrCallback != nil:
 		// Create pipe for callback-based stderr handling
-		stderrPipe, err := t.cmd.StderrPipe()
+		r, w, err := t.pipeFromChild()
 		if err != nil {
 			return fmt.Errorf("failed to create stderr pipe: %w", err)
 		}
-		t.stderrPipe = stderrPipe
+		t.stderrPipe = r
+		t.cmd.Stderr = w
 	case t.options != nil && t.options.DebugWriter != nil:
 		// Use custom debug writer provided by user
 		t.cmd.Stderr = t.options.DebugWriter
@@ -192,10 +207,12 @@ func (t *Transport) setupIoPipes() error {
 		}
 	}
 
-	t.stdout, err = t.cmd.StdoutPipe()
+	r, w, err := t.pipeFromChild()
 	if err != nil {
 		return fmt.Errorf("failed to create stdout pipe: %w", err)
 	}
+	t.stdout = r
+	t.cmd.Stdout = w
 
 	// Handle stderr configuration
 	if err := t.setupStderr(); err != nil {
@@ -203,4 +220,26 @@ func (t *Transport) setupIoPipes() error {
 	}
 
 	return nil
+}
+
+// pipeFromChild returns a new pipe whose write end is handed to the child. The
+// os/exec StdoutPipe and StderrPipe helpers are unsuitable: Wait closes their
+// read ends once the child exits, discarding unread output, and the process
+// waiter calls Wait the moment the child exits.
+func (t *Transport) pipeFromChild() (r, w *os.File, err error) {
+	r, w, err = os.Pipe()
+	if err != nil {
+		return nil, nil, err
+	}
+	t.childPipeEnds = append(t.childPipeEnds, w)
+	return r, w, nil
+}
+
+// closeChildPipeEnds closes the parent's copies of the child's write ends, so
+// readers see EOF once the child (and anything it spawned) closes its copies.
+func (t *Transport) closeChildPipeEnds() {
+	for _, w := range t.childPipeEnds {
+		_ = w.Close()
+	}
+	t.childPipeEnds = nil
 }

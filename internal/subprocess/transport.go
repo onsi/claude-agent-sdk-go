@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
-	"time"
 
 	"github.com/severity1/claude-agent-sdk-go/internal/cli"
 	"github.com/severity1/claude-agent-sdk-go/internal/control"
@@ -37,15 +36,23 @@ type Transport struct {
 	promptArg  *string // For one-shot queries, prompt passed as CLI argument
 	entrypoint string  // CLAUDE_CODE_ENTRYPOINT value (sdk-go or sdk-go-client)
 
+	// proc is guarded by procMu as well as mu so Done and Err never wait on a
+	// Close that holds mu while the child terminates.
+	proc   *process
+	procMu sync.RWMutex
+
 	// Connection state
 	connected bool
 	mu        sync.RWMutex
 
 	// I/O streams
 	stdin      io.WriteCloser
-	stdout     io.ReadCloser
-	stderr     *os.File      // Temporary file for stderr isolation
-	stderrPipe io.ReadCloser // Pipe for callback-based stderr handling
+	stdout     *os.File
+	stderr     *os.File // Temporary file for stderr isolation
+	stderrPipe *os.File // Pipe for callback-based stderr handling
+
+	// childPipeEnds are the write ends handed to the child, closed in the parent once it starts.
+	childPipeEnds []*os.File
 
 	// Temporary files (cleaned up on Close)
 	mcpConfigFile *os.File // Temporary MCP config file
@@ -107,7 +114,32 @@ func newParser(options *shared.Options) *parser.Parser {
 func (t *Transport) IsConnected() bool {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	return t.connected && t.cmd != nil && t.cmd.Process != nil
+	return t.connected && t.cmd != nil && t.cmd.Process != nil && !t.proc.exited()
+}
+
+// Done returns a channel that is closed once the CLI process has exited and
+// been reaped, whether it exited on its own or was ended by Close. Before the
+// first Connect it returns an already-closed channel.
+func (t *Transport) Done() <-chan struct{} {
+	t.procMu.RLock()
+	defer t.procMu.RUnlock()
+	if t.proc == nil {
+		return alreadyDone
+	}
+	return t.proc.done
+}
+
+// Err returns nil while the CLI process is running. Once Done is closed it
+// returns a non-nil error: a *shared.ProcessError carrying the exit code (-1
+// for a signal) when the process exited on its own, or an error stating the
+// transport was closed when Close ended it or no process was ever started.
+func (t *Transport) Err() error {
+	t.procMu.RLock()
+	defer t.procMu.RUnlock()
+	if t.proc == nil {
+		return errTransportClosed
+	}
+	return t.proc.err()
 }
 
 // Connect starts the Claude CLI subprocess.
@@ -153,6 +185,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 
 	// Set up I/O pipes
 	if err := t.setupIoPipes(); err != nil {
+		t.cleanup()
 		return err
 	}
 
@@ -165,6 +198,11 @@ func (t *Transport) Connect(ctx context.Context) error {
 		)
 	}
 
+	t.procMu.Lock()
+	t.proc = watchProcess(t.cmd)
+	t.procMu.Unlock()
+	t.closeChildPipeEnds()
+
 	// Set up context for goroutine management
 	t.ctx, t.cancel = context.WithCancel(ctx)
 
@@ -174,12 +212,12 @@ func (t *Transport) Connect(ctx context.Context) error {
 
 	// Start I/O handling goroutines
 	t.wg.Add(1)
-	go t.handleStdout()
+	go t.handleStdout(t.stdout, t.proc)
 
 	// Start stderr callback goroutine if callback is configured
 	if t.stderrPipe != nil && t.options != nil && t.options.StderrCallback != nil {
 		t.wg.Add(1)
-		go t.handleStderrCallback()
+		go t.handleStderrCallback(t.stderrPipe)
 	}
 
 	// Note: Do NOT close stdin here for one-shot mode
@@ -188,6 +226,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 
 	// Set up control protocol for streaming mode only
 	if err := t.setupControlProtocol(t.ctx); err != nil {
+		_ = t.shutdown()
 		return err
 	}
 
@@ -206,14 +245,12 @@ func (t *Transport) setupControlProtocol(ctx context.Context) error {
 	t.protocol = control.NewProtocol(t.protocolAdapter, t.buildProtocolOptions()...)
 
 	if err := t.protocol.Start(ctx); err != nil {
-		t.cleanup()
 		return fmt.Errorf("failed to start control protocol: %w", err)
 	}
 
 	// Perform handshake when hooks, permissions, checkpointing, or SDK MCP servers configured
 	if t.needsProtocolHandshake() {
 		if _, err := t.protocol.Initialize(ctx); err != nil {
-			t.cleanup()
 			return fmt.Errorf("failed to initialize control protocol: %w", err)
 		}
 	}
@@ -245,6 +282,10 @@ func (t *Transport) SendMessage(ctx context.Context, message shared.StreamMessag
 
 	if !t.connected || t.stdin == nil {
 		return fmt.Errorf("transport not connected or stdin closed")
+	}
+
+	if err := t.proc.err(); err != nil {
+		return fmt.Errorf("failed to write message: %w", err)
 	}
 
 	// Check context cancellation
@@ -320,51 +361,5 @@ func (t *Transport) Close() error {
 	}
 
 	t.connected = false
-
-	// Close control protocol first (before cancelling context)
-	if t.protocol != nil {
-		_ = t.protocol.Close()
-		t.protocol = nil
-	}
-	if t.protocolAdapter != nil {
-		_ = t.protocolAdapter.Close()
-		t.protocolAdapter = nil
-	}
-
-	// Cancel context to stop goroutines
-	if t.cancel != nil {
-		t.cancel()
-	}
-
-	// Close stdin if open
-	if t.stdin != nil {
-		_ = t.stdin.Close()
-		t.stdin = nil
-	}
-
-	// Wait for goroutines to finish with timeout
-	done := make(chan struct{})
-	go func() {
-		t.wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-		// Goroutines finished gracefully
-	case <-time.After(terminationTimeoutSeconds * time.Second):
-		// Timeout: proceed with cleanup anyway
-		// Goroutines should terminate when process is killed
-	}
-
-	// Terminate process with 5-second timeout
-	var err error
-	if t.cmd != nil && t.cmd.Process != nil {
-		err = t.terminateProcess()
-	}
-
-	// Cleanup resources
-	t.cleanup()
-
-	return err
+	return t.shutdown()
 }
