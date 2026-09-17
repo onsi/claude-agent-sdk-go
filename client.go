@@ -2,6 +2,7 @@ package claudecode
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -41,7 +42,36 @@ type Client interface {
 	GetStreamIssues() []StreamIssue
 	GetStreamStats() StreamStats
 	GetServerInfo(ctx context.Context) (map[string]interface{}, error)
+	// Done returns a channel that is closed once the connected CLI process has
+	// exited, whether it exited on its own, was ended by Interrupt, or was
+	// stopped by Disconnect; when the message channel closes because the
+	// process ended, Done is already closed. Before Connect and after
+	// Disconnect it returns an already-closed channel. With a custom transport
+	// that cannot report its process, the channel closes on Disconnect.
+	Done() <-chan struct{}
+	// Err returns nil while the connected CLI process is running. Once Done is
+	// closed it returns why the client can no longer serve a turn: a
+	// *ProcessError (see AsProcessError) carrying the exit code, or -1 when a
+	// signal ended the process, or a "client not connected" error before
+	// Connect and after Disconnect. The same error is returned by every method
+	// that would write to the process.
+	Err() error
 }
+
+// processWatcher is implemented by transports that can report when their CLI
+// process has exited.
+type processWatcher interface {
+	Done() <-chan struct{}
+	Err() error
+}
+
+var errClientNotConnected = errors.New("client not connected")
+
+var alreadyClosed = func() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}()
 
 // ClientImpl implements the Client interface.
 type ClientImpl struct {
@@ -53,6 +83,7 @@ type ClientImpl struct {
 	msgChan         <-chan Message
 	errChan         <-chan error
 	streamErrChan   chan error // writable; receives errors from QueryStream goroutine
+	disconnected    chan struct{}
 }
 
 // NewClient creates a new Client with the given options.
@@ -264,6 +295,7 @@ func (c *ClientImpl) Connect(ctx context.Context, _ ...StreamMessage) error {
 	// Get message channels
 	c.msgChan, c.errChan = c.transport.ReceiveMessages(ctx)
 	c.streamErrChan = make(chan error, 1)
+	c.disconnected = make(chan struct{})
 
 	c.connected = true
 	return nil
@@ -278,6 +310,9 @@ func (c *ClientImpl) Disconnect() error {
 		if err := c.transport.Close(); err != nil {
 			return fmt.Errorf("failed to close transport: %w", err)
 		}
+	}
+	if c.connected {
+		close(c.disconnected)
 	}
 	c.connected = false
 	c.transport = nil
@@ -323,14 +358,9 @@ func (c *ClientImpl) queryWithSession(ctx context.Context, prompt string, sessio
 		return ctx.Err()
 	}
 
-	// Check connection status with read lock
-	c.mu.RLock()
-	connected := c.connected
-	transport := c.transport
-	c.mu.RUnlock()
-
-	if !connected || transport == nil {
-		return fmt.Errorf("client not connected")
+	transport, err := c.liveTransport()
+	if err != nil {
+		return err
 	}
 
 	// Check context again after acquiring connection info
@@ -353,18 +383,19 @@ func (c *ClientImpl) queryWithSession(ctx context.Context, prompt string, sessio
 	return transport.SendMessage(ctx, streamMsg)
 }
 
-// QueryStream sends a stream of messages.
+// QueryStream sends each message received from messages until that channel
+// closes or ctx is done. It returns an error only when the client cannot write
+// at all (see Err); the sends happen asynchronously, so a later send failure is
+// reported by the iterator from ReceiveResponse, and a send that failed because
+// the CLI process exited is also visible through Done and Err.
 func (c *ClientImpl) QueryStream(ctx context.Context, messages <-chan StreamMessage) error {
-	// Check connection status with read lock
+	transport, err := c.liveTransport()
+	if err != nil {
+		return err
+	}
 	c.mu.RLock()
-	connected := c.connected
-	transport := c.transport
 	streamErrChan := c.streamErrChan
 	c.mu.RUnlock()
-
-	if !connected || transport == nil {
-		return fmt.Errorf("client not connected")
-	}
 
 	// Send messages from channel in a goroutine
 	go func() {
@@ -415,6 +446,7 @@ func (c *ClientImpl) ReceiveResponse(_ context.Context) MessageIterator {
 	// Check connection status with read lock
 	c.mu.RLock()
 	connected := c.connected
+	transport := c.transport
 	msgChan := c.msgChan
 	errChan := c.errChan
 	streamErrChan := c.streamErrChan
@@ -430,6 +462,7 @@ func (c *ClientImpl) ReceiveResponse(_ context.Context) MessageIterator {
 		msgChan:       msgChan,
 		errChan:       errChan,
 		streamErrChan: streamErrChan,
+		exitErr:       func() error { return exitFailure(transport) },
 	}
 }
 
@@ -440,14 +473,9 @@ func (c *ClientImpl) Interrupt(ctx context.Context) error {
 		return ctx.Err()
 	}
 
-	// Check connection status with read lock
-	c.mu.RLock()
-	connected := c.connected
-	transport := c.transport
-	c.mu.RUnlock()
-
-	if !connected || transport == nil {
-		return fmt.Errorf("client not connected")
+	transport, err := c.liveTransport()
+	if err != nil {
+		return err
 	}
 
 	return transport.Interrupt(ctx)
@@ -471,14 +499,9 @@ func (c *ClientImpl) SetModel(ctx context.Context, model *string) error {
 		return ctx.Err()
 	}
 
-	// Check connection status with read lock (minimize lock duration)
-	c.mu.RLock()
-	connected := c.connected
-	transport := c.transport
-	c.mu.RUnlock()
-
-	if !connected || transport == nil {
-		return fmt.Errorf("client not connected")
+	transport, err := c.liveTransport()
+	if err != nil {
+		return err
 	}
 
 	return transport.SetModel(ctx, model)
@@ -502,14 +525,9 @@ func (c *ClientImpl) SetPermissionMode(ctx context.Context, mode PermissionMode)
 		return ctx.Err()
 	}
 
-	// Check connection status with read lock (minimize lock duration)
-	c.mu.RLock()
-	connected := c.connected
-	transport := c.transport
-	c.mu.RUnlock()
-
-	if !connected || transport == nil {
-		return fmt.Errorf("client not connected")
+	transport, err := c.liveTransport()
+	if err != nil {
+		return err
 	}
 
 	return transport.SetPermissionMode(ctx, mode)
@@ -533,14 +551,9 @@ func (c *ClientImpl) RewindFiles(ctx context.Context, messageUUID string) error 
 		return ctx.Err()
 	}
 
-	// Check connection status with read lock (minimize lock duration)
-	c.mu.RLock()
-	connected := c.connected
-	transport := c.transport
-	c.mu.RUnlock()
-
-	if !connected || transport == nil {
-		return fmt.Errorf("client not connected")
+	transport, err := c.liveTransport()
+	if err != nil {
+		return err
 	}
 
 	return transport.RewindFiles(ctx, messageUUID)
@@ -553,13 +566,9 @@ func (c *ClientImpl) GetMcpStatus(ctx context.Context) (*McpStatusResponse, erro
 		return nil, ctx.Err()
 	}
 
-	c.mu.RLock()
-	connected := c.connected
-	transport := c.transport
-	c.mu.RUnlock()
-
-	if !connected || transport == nil {
-		return nil, fmt.Errorf("client not connected")
+	transport, err := c.liveTransport()
+	if err != nil {
+		return nil, err
 	}
 
 	return transport.GetMcpStatus(ctx)
@@ -570,6 +579,7 @@ type clientIterator struct {
 	msgChan       <-chan Message
 	errChan       <-chan error
 	streamErrChan <-chan error
+	exitErr       func() error
 	mu            sync.Mutex
 	closed        bool
 }
@@ -582,31 +592,39 @@ func (ci *clientIterator) Next(ctx context.Context) (Message, error) {
 	}
 	ci.mu.Unlock()
 
-	select {
-	case msg, ok := <-ci.msgChan:
-		if !ok {
-			ci.mu.Lock()
-			ci.closed = true
-			ci.mu.Unlock()
-			return nil, ErrNoMoreMessages
+	for {
+		select {
+		case msg, ok := <-ci.msgChan:
+			if ok {
+				return msg, nil
+			}
+			if ci.exitErr != nil {
+				if err := ci.exitErr(); err != nil {
+					return nil, ci.finish(err)
+				}
+			}
+			return nil, ci.finish(ErrNoMoreMessages)
+		case err, ok := <-ci.errChan:
+			if !ok {
+				// The error channel closes just before the message channel,
+				// which may still hold buffered messages.
+				ci.errChan = nil
+				continue
+			}
+			return nil, ci.finish(err)
+		case err := <-ci.streamErrChan:
+			return nil, ci.finish(err)
+		case <-ctx.Done():
+			return nil, ci.finish(ctx.Err())
 		}
-		return msg, nil
-	case err := <-ci.errChan:
-		ci.mu.Lock()
-		ci.closed = true
-		ci.mu.Unlock()
-		return nil, err
-	case err := <-ci.streamErrChan:
-		ci.mu.Lock()
-		ci.closed = true
-		ci.mu.Unlock()
-		return nil, err
-	case <-ctx.Done():
-		ci.mu.Lock()
-		ci.closed = true
-		ci.mu.Unlock()
-		return nil, ctx.Err()
 	}
+}
+
+func (ci *clientIterator) finish(err error) error {
+	ci.mu.Lock()
+	ci.closed = true
+	ci.mu.Unlock()
+	return err
 }
 
 func (ci *clientIterator) Close() error {
@@ -688,4 +706,54 @@ func (c *ClientImpl) GetServerInfo(_ context.Context) (map[string]interface{}, e
 	}
 
 	return info, nil
+}
+
+// Done returns a channel that is closed once the connected CLI process has exited.
+func (c *ClientImpl) Done() <-chan struct{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.connected || c.transport == nil {
+		return alreadyClosed
+	}
+	if w, ok := c.transport.(processWatcher); ok {
+		return w.Done()
+	}
+	return c.disconnected
+}
+
+// Err returns nil while the connected CLI process is running, and why the
+// client can no longer serve a turn once Done is closed.
+func (c *ClientImpl) Err() error {
+	_, err := c.liveTransport()
+	return err
+}
+
+// liveTransport returns the transport if the client is connected and its CLI
+// process is still running.
+func (c *ClientImpl) liveTransport() (Transport, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if !c.connected || c.transport == nil {
+		return nil, errClientNotConnected
+	}
+	if w, ok := c.transport.(processWatcher); ok {
+		if err := w.Err(); err != nil {
+			return nil, err
+		}
+	}
+	return c.transport, nil
+}
+
+// exitFailure returns the transport's exit error when its CLI process exited
+// on its own with a non-zero status or a signal, and nil otherwise.
+func exitFailure(transport Transport) error {
+	w, ok := transport.(processWatcher)
+	if !ok {
+		return nil
+	}
+	err := w.Err()
+	if procErr := AsProcessError(err); procErr != nil && procErr.ExitCode != 0 {
+		return err
+	}
+	return nil
 }
