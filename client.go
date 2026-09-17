@@ -70,6 +70,12 @@ type Client interface {
 	Err() error
 }
 
+// turnDispatcher is implemented by transports that track the gap between a
+// queued user message and the CLI starting the turn it belongs to.
+type turnDispatcher interface {
+	DispatchTurn() func()
+}
+
 // processWatcher is implemented by transports that can report when their CLI
 // process has exited.
 type processWatcher interface {
@@ -410,8 +416,16 @@ func (c *ClientImpl) QueryStream(ctx context.Context, messages <-chan StreamMess
 	streamErrChan := c.streamErrChan
 	c.mu.RUnlock()
 
+	// The window for a stop the CLI would drop as idle opens here, not at the
+	// write, which happens after this call returns.
+	release := func() {}
+	if dispatcher, ok := transport.(turnDispatcher); ok {
+		release = dispatcher.DispatchTurn()
+	}
+
 	// Send messages from channel in a goroutine
 	go func() {
+		defer release()
 		for {
 			select {
 			case msg, ok := <-messages:

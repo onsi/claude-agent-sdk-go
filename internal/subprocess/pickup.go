@@ -9,14 +9,32 @@ import "sync"
 // repeat once the turn starts.
 type pickup struct {
 	mu      sync.Mutex
+	gen     uint64
 	pending bool
 	again   bool
 }
 
-func (p *pickup) dispatched() {
+// dispatched opens the window, or keeps an open one: a stream that arms on
+// entry and again on its first write is one turn. The returned generation
+// identifies this arming.
+func (p *pickup) dispatched() uint64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.pending, p.again = true, false
+	if !p.pending {
+		p.pending, p.again = true, false
+	}
+	p.gen++
+	return p.gen
+}
+
+// abandoned closes a window that never carried a message. Any later arming
+// supersedes it, and then this does nothing.
+func (p *pickup) abandoned(gen uint64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.gen == gen {
+		p.pending, p.again = false, false
+	}
 }
 
 func (p *pickup) stopped() {

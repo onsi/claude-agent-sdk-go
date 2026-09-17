@@ -222,3 +222,32 @@ func TestPickupWindowClearsWhenTheTurnEndsWithoutStarting(t *testing.T) {
 		t.Errorf("CLI received %d interrupts, want only the one that was issued", got)
 	}
 }
+
+// QueryStream writes from a goroutine, so the window it opens has to cover the
+// sliver between the call returning and that write.
+func TestInterruptBeforeQueryStreamWritesIsRepeatedOnTurnStart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client, msgs, logPath := connectPickupStubClient(ctx, t)
+
+	messages := make(chan StreamMessage, 1)
+	if err := client.QueryStream(ctx, messages); err != nil {
+		t.Fatalf("QueryStream: %v", err)
+	}
+	if err := client.Interrupt(ctx); err != nil {
+		t.Fatalf("Interrupt: %v", err)
+	}
+
+	messages <- StreamMessage{
+		Type:      "user",
+		Message:   map[string]any{"role": "user", "content": "start the turn"},
+		SessionID: "default",
+	}
+
+	awaitStoppedTurn(t, msgs)
+
+	if got := countInterrupts(stubStdinLog(t, logPath)); got != 2 {
+		t.Errorf("CLI received %d interrupts, want the dropped one and its repeat", got)
+	}
+}

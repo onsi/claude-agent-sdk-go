@@ -356,17 +356,26 @@ func (t *Transport) writeMessage(stdin *stdinWriter, message shared.StreamMessag
 	if err != nil {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
-	dispatch := message.Type == "user" && t.streamingInput()
-	if dispatch {
-		t.pickup.dispatched()
+	var gen uint64
+	if message.Type == "user" && t.streamingInput() {
+		gen = t.pickup.dispatched()
 	}
 	if _, err := stdin.Write(append(data, '\n')); err != nil {
-		if dispatch {
-			t.pickup.reset()
-		}
+		t.pickup.abandoned(gen)
 		return fmt.Errorf("failed to write message: %w", err)
 	}
 	return nil
+}
+
+// DispatchTurn opens the pickup window for a turn whose user message has not
+// been written yet, such as one handed to an asynchronous writer. The returned
+// function closes that window again if no message followed.
+func (t *Transport) DispatchTurn() func() {
+	if !t.streamingInput() {
+		return func() {}
+	}
+	gen := t.pickup.dispatched()
+	return func() { t.pickup.abandoned(gen) }
 }
 
 // ReceiveMessages returns channels for receiving messages and errors.
