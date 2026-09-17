@@ -1,11 +1,86 @@
 package subprocess
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
+
+	"github.com/severity1/claude-agent-sdk-go/internal/shared"
 )
+
+var errTransportClosed = errors.New("transport closed")
+
+var alreadyDone = func() chan struct{} {
+	ch := make(chan struct{})
+	close(ch)
+	return ch
+}()
+
+// process tracks one started CLI child. Its waiter goroutine is the only caller
+// of cmd.Wait: a second concurrent Wait is an error in os/exec and would race
+// the first for the exit status.
+type process struct {
+	done    chan struct{}
+	waitErr error
+
+	mu     sync.Mutex
+	closed bool
+}
+
+func watchProcess(cmd *exec.Cmd) *process {
+	p := &process{done: make(chan struct{})}
+	go func() {
+		p.waitErr = cmd.Wait()
+		close(p.done)
+	}()
+	return p
+}
+
+func (p *process) exited() bool {
+	select {
+	case <-p.done:
+		return true
+	default:
+		return false
+	}
+}
+
+// markClosed records that Close, not the child, ended the process. It is a
+// no-op once the child has exited so that err never changes after it is first
+// non-nil.
+func (p *process) markClosed() {
+	p.mu.Lock()
+	if !p.exited() {
+		p.closed = true
+	}
+	p.mu.Unlock()
+}
+
+// err returns nil while the child runs, and a non-nil reason once it has been reaped.
+func (p *process) err() error {
+	if !p.exited() {
+		return nil
+	}
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		return errTransportClosed
+	}
+	if p.waitErr == nil {
+		return shared.NewProcessError("claude process exited", 0, "")
+	}
+	var exitErr *exec.ExitError
+	if errors.As(p.waitErr, &exitErr) && exitErr.Exited() {
+		return shared.NewProcessError("claude process exited", exitErr.ExitCode(), "")
+	}
+	return shared.NewProcessError(fmt.Sprintf("claude process exited: %v", p.waitErr), -1, "")
+}
 
 // isProcessAlreadyFinishedError checks if an error indicates the process has already terminated.
 // This follows the Python SDK pattern of suppressing "process not found" type errors.
@@ -20,66 +95,78 @@ func isProcessAlreadyFinishedError(err error) bool {
 		strings.Contains(errStr, "signal: killed")
 }
 
-// terminateProcess implements the 5-second SIGTERM -> SIGKILL sequence
-func (t *Transport) terminateProcess() error {
-	if t.cmd == nil || t.cmd.Process == nil {
+// terminateProcess asks the child to exit, waits up to the termination timeout,
+// then kills it. In streaming mode the request is the stdin EOF the caller has
+// already delivered, so the CLI can flush its session before exiting; one-shot
+// mode gets SIGTERM instead. It returns only once the child has been reaped.
+func (t *Transport) terminateProcess(p *process) error {
+	if p == nil {
+		return nil
+	}
+	p.markClosed()
+	if p.exited() {
 		return nil
 	}
 
-	// Send SIGTERM
-	if err := t.cmd.Process.Signal(syscall.SIGTERM); err != nil {
-		// If process is already finished, that's success
-		if isProcessAlreadyFinishedError(err) {
-			return nil
+	if t.closeStdin {
+		if err := t.cmd.Process.Signal(syscall.SIGTERM); err != nil && !isProcessAlreadyFinishedError(err) {
+			return t.killProcess(p)
 		}
-		// If SIGTERM fails for other reasons, try SIGKILL immediately
-		killErr := t.cmd.Process.Kill()
-		if killErr != nil && !isProcessAlreadyFinishedError(killErr) {
-			return killErr
-		}
-		return nil // Don't return error for expected termination
 	}
-
-	// Wait exactly 5 seconds
-	done := make(chan error, 1)
-	// Capture cmd while we know it's valid to avoid data race
-	cmd := t.cmd
-	go func() {
-		done <- cmd.Wait()
-	}()
 
 	select {
-	case err := <-done:
-		// Normal termination or expected signals are not errors
-		if err != nil {
-			// Check if it's an expected exit signal
-			if strings.Contains(err.Error(), "signal:") {
-				return nil // Expected signal termination
-			}
-		}
-		return err
+	case <-p.done:
+		return nil
 	case <-time.After(terminationTimeoutSeconds * time.Second):
-		// Force kill after 5 seconds
-		if killErr := t.cmd.Process.Kill(); killErr != nil && !isProcessAlreadyFinishedError(killErr) {
-			return killErr
-		}
-		// Wait for process to exit after kill
-		<-done
-		return nil
-	case <-t.ctx.Done():
-		// Context canceled - force kill immediately
-		if killErr := t.cmd.Process.Kill(); killErr != nil && !isProcessAlreadyFinishedError(killErr) {
-			return killErr
-		}
-		// Wait for process to exit after kill, but don't return context error
-		// since this is normal cleanup behavior
-		<-done
-		return nil
+		return t.killProcess(p)
 	}
+}
+
+func (t *Transport) killProcess(p *process) error {
+	if err := t.cmd.Process.Kill(); err != nil && !isProcessAlreadyFinishedError(err) {
+		return err
+	}
+	<-p.done
+	return nil
+}
+
+// shutdown stops a started child and every goroutine reading from it, then
+// releases all resources. The caller holds t.mu.
+func (t *Transport) shutdown() error {
+	if t.protocol != nil {
+		_ = t.protocol.Close()
+	}
+	if t.protocolAdapter != nil {
+		_ = t.protocolAdapter.Close()
+	}
+	if t.stdin != nil {
+		_ = t.stdin.Close()
+		t.stdin = nil
+	}
+
+	err := t.terminateProcess(t.proc)
+
+	if t.cancel != nil {
+		t.cancel()
+	}
+	// A grandchild that inherited the child's stdout or stderr can hold the pipe
+	// open past the child's exit; closing our read ends unblocks the readers.
+	if t.stdout != nil {
+		_ = t.stdout.Close()
+	}
+	if t.stderrPipe != nil {
+		_ = t.stderrPipe.Close()
+	}
+	t.wg.Wait()
+
+	t.cleanup()
+	return err
 }
 
 // cleanup cleans up all resources
 func (t *Transport) cleanup() {
+	t.closeChildPipeEnds()
+
 	if t.stdout != nil {
 		_ = t.stdout.Close()
 		t.stdout = nil
@@ -104,6 +191,9 @@ func (t *Transport) cleanup() {
 		_ = os.Remove(t.mcpConfigFile.Name()) // Ignore cleanup errors
 		t.mcpConfigFile = nil
 	}
+
+	t.protocol = nil
+	t.protocolAdapter = nil
 
 	// Reset state
 	t.cmd = nil
