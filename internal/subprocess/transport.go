@@ -5,10 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 
 	"github.com/severity1/claude-agent-sdk-go/internal/cli"
 	"github.com/severity1/claude-agent-sdk-go/internal/control"
@@ -43,9 +43,13 @@ type Transport struct {
 	// Connection state
 	connected bool
 	mu        sync.RWMutex
+	// handshakeDone mirrors connected for the stdout reader, which must not
+	// take mu: Connect holds it while waiting for the reader to route the
+	// handshake response.
+	handshakeDone int32
 
 	// I/O streams
-	stdin      io.WriteCloser
+	stdin      *stdinWriter
 	stdout     *os.File
 	stderr     *os.File // Temporary file for stderr isolation
 	stderrPipe *os.File // Pipe for callback-based stderr handling
@@ -109,6 +113,12 @@ func newParser(options *shared.Options) *parser.Parser {
 	return parser.New()
 }
 
+// streamingInput reports whether the CLI reads stream-json from stdin and so
+// can speak the control protocol.
+func (t *Transport) streamingInput() bool {
+	return !t.closeStdin
+}
+
 // IsConnected returns whether the transport is currently connected.
 func (t *Transport) IsConnected() bool {
 	t.mu.RLock()
@@ -149,6 +159,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 	if t.connected {
 		return fmt.Errorf("transport already connected")
 	}
+	atomic.StoreInt32(&t.handshakeDone, 0)
 
 	// Generate MCP config file if McpServers are specified
 	opts, err := t.prepareMcpConfig()
@@ -156,15 +167,7 @@ func (t *Transport) Connect(ctx context.Context) error {
 		return err
 	}
 
-	// Build command with all options
-	var args []string
-	if t.promptArg != nil {
-		// One-shot query with prompt as CLI argument
-		args = cli.BuildCommandWithPrompt(t.cliPath, opts, *t.promptArg)
-	} else {
-		// Streaming mode or regular one-shot
-		args = cli.BuildCommand(t.cliPath, opts, t.closeStdin)
-	}
+	args := t.buildArgs(opts)
 	//nolint:gosec // G204: This is the core CLI SDK functionality - subprocess execution is required
 	t.cmd = exec.CommandContext(ctx, args[0], args[1:]...)
 
@@ -209,6 +212,11 @@ func (t *Transport) Connect(ctx context.Context) error {
 	t.msgChan = make(chan shared.Message, channelBufferSize)
 	t.errChan = make(chan error, channelBufferSize)
 
+	if t.streamingInput() {
+		t.protocolAdapter = NewProtocolAdapter(t.stdin)
+		t.protocol = control.NewProtocol(t.protocolAdapter, t.buildProtocolOptions()...)
+	}
+
 	// Start I/O handling goroutines
 	t.wg.Add(1)
 	go t.handleStdout(t.stdout, t.proc)
@@ -219,29 +227,29 @@ func (t *Transport) Connect(ctx context.Context) error {
 		go t.handleStderrCallback(t.stderrPipe)
 	}
 
-	// Note: Do NOT close stdin here for one-shot mode
-	// The CLI still needs stdin to receive the message, even with --print flag
-	// stdin will be closed after sending the message in SendMessage()
-
-	// Set up control protocol for streaming mode only
 	if err := t.setupControlProtocol(t.ctx); err != nil {
 		_ = t.shutdown()
 		return err
 	}
 
 	t.connected = true
+	atomic.StoreInt32(&t.handshakeDone, 1)
 	return nil
 }
 
-// setupControlProtocol initializes control protocol for streaming mode.
-// Returns nil immediately for one-shot mode (closeStdin == true).
-func (t *Transport) setupControlProtocol(ctx context.Context) error {
-	if t.closeStdin {
-		return nil // One-shot mode doesn't need control protocol
+func (t *Transport) buildArgs(opts *shared.Options) []string {
+	if t.promptArg != nil {
+		return cli.BuildCommandWithPrompt(t.cliPath, opts, *t.promptArg)
 	}
+	return cli.BuildCommand(t.cliPath, opts, !t.streamingInput())
+}
 
-	t.protocolAdapter = NewProtocolAdapter(t.stdin)
-	t.protocol = control.NewProtocol(t.protocolAdapter, t.buildProtocolOptions()...)
+// setupControlProtocol starts the control protocol, when the CLI reads
+// streaming input, and performs the handshake if any option needs it.
+func (t *Transport) setupControlProtocol(ctx context.Context) error {
+	if t.protocol == nil {
+		return nil
+	}
 
 	if err := t.protocol.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start control protocol: %w", err)
@@ -265,25 +273,25 @@ func (t *Transport) needsProtocolHandshake() bool {
 	return t.options.Hooks != nil ||
 		t.options.CanUseTool != nil ||
 		t.options.EnableFileCheckpointing ||
-		t.hasSdkMcpServers()
+		hasSdkMcpServers(t.options)
 }
 
 // SendMessage sends a message to the CLI subprocess.
 func (t *Transport) SendMessage(ctx context.Context, message shared.StreamMessage) error {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	// For one-shot queries with promptArg, the prompt is already passed as CLI argument
-	// so we don't need to send any messages via stdin
+	// A one-shot query's prompt is already on the command line.
 	if t.promptArg != nil {
-		return nil // No-op for one-shot queries
+		return nil
 	}
 
-	if !t.connected || t.stdin == nil {
+	t.mu.RLock()
+	connected, stdin, proc := t.connected, t.stdin, t.proc
+	t.mu.RUnlock()
+
+	if !connected || stdin == nil {
 		return fmt.Errorf("transport not connected or stdin closed")
 	}
 
-	if err := t.proc.err(); err != nil {
+	if err := proc.err(); err != nil {
 		return fmt.Errorf("failed to write message: %w", err)
 	}
 
@@ -294,24 +302,26 @@ func (t *Transport) SendMessage(ctx context.Context, message shared.StreamMessag
 	default:
 	}
 
-	// Serialize message to JSON
+	if err := t.writeMessage(stdin, message); err != nil {
+		return err
+	}
+
+	if t.closeStdin {
+		_ = stdin.Close()
+	}
+
+	return nil
+}
+
+// writeMessage writes message to stdin as one JSON line.
+func (t *Transport) writeMessage(stdin *stdinWriter, message shared.StreamMessage) error {
 	data, err := json.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
-
-	// Send with newline
-	_, err = t.stdin.Write(append(data, '\n'))
-	if err != nil {
+	if _, err := stdin.Write(append(data, '\n')); err != nil {
 		return fmt.Errorf("failed to write message: %w", err)
 	}
-
-	// For one-shot mode, close stdin after sending the message
-	if t.closeStdin {
-		_ = t.stdin.Close()
-		t.stdin = nil
-	}
-
 	return nil
 }
 

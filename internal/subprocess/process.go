@@ -141,7 +141,6 @@ func (t *Transport) shutdown() error {
 	}
 	if t.stdin != nil {
 		_ = t.stdin.Close()
-		t.stdin = nil
 	}
 
 	err := t.terminateProcess(t.proc)
@@ -194,6 +193,7 @@ func (t *Transport) cleanup() {
 
 	t.protocol = nil
 	t.protocolAdapter = nil
+	t.stdin = nil
 
 	// Reset state
 	t.cmd = nil

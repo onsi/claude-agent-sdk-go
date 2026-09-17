@@ -54,11 +54,12 @@ type Client interface {
 	GetStreamStats() StreamStats
 	GetServerInfo(ctx context.Context) (map[string]interface{}, error)
 	// Done returns a channel that is closed once the connected CLI process has
-	// exited, whether it exited on its own, was ended by Interrupt, or was
-	// stopped by Disconnect; when the message channel closes because the
-	// process ended, Done is already closed. Before Connect and after
-	// Disconnect it returns an already-closed channel. With a custom transport
-	// that cannot report its process, the channel closes on Disconnect.
+	// exited, whether it exited on its own or was stopped by Disconnect;
+	// Interrupt ends only the turn, never the process. When the message
+	// channel closes because the process ended, Done is already closed.
+	// Before Connect and after Disconnect it returns an already-closed
+	// channel. With a custom transport that cannot report its process, the
+	// channel closes on Disconnect.
 	Done() <-chan struct{}
 	// Err returns nil while the connected CLI process is running. Once Done is
 	// closed it returns why the client can no longer serve a turn: a

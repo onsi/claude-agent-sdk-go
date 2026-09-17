@@ -133,98 +133,40 @@ func (t *Transport) BackgroundTasks(ctx context.Context, toolUseID string) (bool
 }
 
 // SetModel changes the AI model during a streaming session.
-// This method requires control protocol integration which is only available
-// in streaming mode (when closeStdin is false).
 func (t *Transport) SetModel(ctx context.Context, model *string) error {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	if !t.connected {
-		return fmt.Errorf("transport not connected")
+	protocol, err := t.controlProtocol("SetModel")
+	if err != nil {
+		return err
 	}
-
-	// Control protocol integration is only available in streaming mode
-	if t.closeStdin {
-		return fmt.Errorf("SetModel not available in one-shot mode")
-	}
-
-	// Delegate to control protocol
-	if t.protocol == nil {
-		return fmt.Errorf("control protocol not initialized")
-	}
-
-	return t.protocol.SetModel(ctx, model)
+	return protocol.SetModel(ctx, model)
 }
 
 // SetPermissionMode changes the permission mode during a streaming session.
-// This method requires control protocol integration which is only available
-// in streaming mode (when closeStdin is false).
 func (t *Transport) SetPermissionMode(ctx context.Context, mode shared.PermissionMode) error {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	if !t.connected {
-		return fmt.Errorf("transport not connected")
+	protocol, err := t.controlProtocol("SetPermissionMode")
+	if err != nil {
+		return err
 	}
-
-	// Control protocol integration is only available in streaming mode
-	if t.closeStdin {
-		return fmt.Errorf("SetPermissionMode not available in one-shot mode")
-	}
-
-	// Delegate to control protocol
-	if t.protocol == nil {
-		return fmt.Errorf("control protocol not initialized")
-	}
-
-	return t.protocol.SetPermissionMode(ctx, string(mode))
+	return protocol.SetPermissionMode(ctx, string(mode))
 }
 
 // RewindFiles reverts tracked files to their state at a specific user message.
-// This method requires control protocol integration which is only available
-// in streaming mode (when closeStdin is false).
-// Returns error if not connected, not in streaming mode, or protocol not initialized.
+// It requires a connected streaming-mode transport.
 func (t *Transport) RewindFiles(ctx context.Context, userMessageID string) error {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	if !t.connected {
-		return fmt.Errorf("transport not connected")
+	protocol, err := t.controlProtocol("RewindFiles")
+	if err != nil {
+		return err
 	}
-
-	// Control protocol integration is only available in streaming mode
-	if t.closeStdin {
-		return fmt.Errorf("RewindFiles not available in one-shot mode")
-	}
-
-	// Delegate to control protocol
-	if t.protocol == nil {
-		return fmt.Errorf("control protocol not initialized")
-	}
-
-	return t.protocol.RewindFiles(ctx, userMessageID)
+	return protocol.RewindFiles(ctx, userMessageID)
 }
 
 // GetMcpStatus returns the connection status of all configured MCP servers.
-// This method requires control protocol integration which is only available
-// in streaming mode (when closeStdin is false).
 func (t *Transport) GetMcpStatus(ctx context.Context) (*control.McpStatusResponse, error) {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	if !t.connected {
-		return nil, fmt.Errorf("transport not connected")
+	protocol, err := t.controlProtocol("GetMcpStatus")
+	if err != nil {
+		return nil, err
 	}
-
-	if t.closeStdin {
-		return nil, fmt.Errorf("GetMcpStatus not available in one-shot mode")
-	}
-
-	if t.protocol == nil {
-		return nil, fmt.Errorf("internal error: transport connected but control protocol is nil")
-	}
-
-	return t.protocol.GetMcpStatus(ctx)
+	return protocol.GetMcpStatus(ctx)
 }
 
 // buildProtocolOptions constructs control protocol options from transport configuration.
@@ -286,13 +228,13 @@ func (t *Transport) buildProtocolOptions() []control.ProtocolOption {
 	return opts
 }
 
-// hasSdkMcpServers checks if any SDK MCP servers are configured.
-// Returns true if at least one SDK server with a valid Instance exists.
-func (t *Transport) hasSdkMcpServers() bool {
-	if t.options == nil || len(t.options.McpServers) == 0 {
+// hasSdkMcpServers reports whether options configure at least one SDK MCP
+// server with an Instance.
+func hasSdkMcpServers(options *shared.Options) bool {
+	if options == nil || len(options.McpServers) == 0 {
 		return false
 	}
-	for _, config := range t.options.McpServers {
+	for _, config := range options.McpServers {
 		if sdkConfig, ok := config.(*shared.McpSdkServerConfig); ok && sdkConfig.Instance != nil {
 			return true
 		}

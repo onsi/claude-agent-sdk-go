@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync/atomic"
 
 	"github.com/severity1/claude-agent-sdk-go/internal/parser"
 	"github.com/severity1/claude-agent-sdk-go/internal/shared"
@@ -148,7 +149,7 @@ func (t *Transport) handleStderrCallback(stderr io.Reader) {
 // unblock Initialize().
 func (t *Transport) routeInitError(msg shared.Message) {
 	resultMsg, ok := msg.(*shared.ResultMessage)
-	if !ok || t.connected || !resultMsg.IsError || t.protocol == nil {
+	if !ok || atomic.LoadInt32(&t.handshakeDone) == 1 || !resultMsg.IsError || t.protocol == nil {
 		return
 	}
 	t.protocol.HandleControlInitErr(errors.New(formatInitError(resultMsg)))
@@ -198,13 +199,13 @@ func (t *Transport) setupStderr() error {
 // For streaming mode, creates a stdin pipe for sending messages. Always creates
 // stdout pipe for receiving responses. Stderr is configured via setupStderr.
 func (t *Transport) setupIoPipes() error {
-	var err error
 	if t.promptArg == nil {
 		// Only create stdin pipe if we need to send messages via stdin
-		t.stdin, err = t.cmd.StdinPipe()
+		pipe, err := t.cmd.StdinPipe()
 		if err != nil {
 			return fmt.Errorf("failed to create stdin pipe: %w", err)
 		}
+		t.stdin = newStdinWriter(pipe)
 	}
 
 	r, w, err := t.pipeFromChild()

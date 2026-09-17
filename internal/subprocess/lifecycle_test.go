@@ -61,3 +61,35 @@ func TestConnectHandshakeFailureReapsChild(t *testing.T) {
 		t.Error("transport reports connected after a failed Connect")
 	}
 }
+
+func TestErrorResultDuringConnectIsDeliveredWithoutRace(t *testing.T) {
+	dir := t.TempDir()
+	cliPath := filepath.Join(dir, "claude")
+	result := `{"type":"result","subtype":"error_during_execution","duration_ms":1,"duration_api_ms":1,"is_error":true,"num_turns":0,"session_id":"s1"}`
+	script := fmt.Sprintf("#!/bin/sh\nif [ \"$1\" = \"-v\" ]; then echo 3.0.0; exit 0; fi\necho '%s'\nexec cat >/dev/null\n", result)
+	if err := os.WriteFile(cliPath, []byte(script), 0o700); err != nil { //nolint:gosec // G306: test stub must be executable
+		t.Fatalf("write stub CLI: %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		transport := New(cliPath, &shared.Options{}, false, "sdk-go-client")
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := transport.Connect(ctx); err != nil {
+			cancel()
+			t.Fatalf("Connect: %v", err)
+		}
+		msgs, _ := transport.ReceiveMessages(ctx)
+		select {
+		case msg := <-msgs:
+			if res, ok := msg.(*shared.ResultMessage); !ok || !res.IsError {
+				t.Errorf("first message = %#v, want the error result", msg)
+			}
+		case <-ctx.Done():
+			t.Error("error result never delivered")
+		}
+		if err := transport.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+		cancel()
+	}
+}
