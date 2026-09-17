@@ -33,24 +33,6 @@ func TestTransportProcessManagement(t *testing.T) {
 
 		assertTransportConnected(t, transport, false)
 	})
-
-	// Test interrupt handling
-	t.Run("interrupt_handling", func(t *testing.T) {
-		if runtime.GOOS == windowsOS {
-			t.Skip("Interrupt not supported on Windows")
-		}
-
-		transport := setupTransportForTest(t, newTransportMockCLI())
-		defer disconnectTransportSafely(t, transport)
-
-		connectTransportSafely(ctx, t, transport)
-
-		err := transport.Interrupt(ctx)
-		assertNoTransportError(t, err)
-
-		// Process should still be manageable after interrupt
-		assertTransportConnected(t, transport, true)
-	})
 }
 
 // TestTransportTerminateProcessPaths tests uncovered terminateProcess scenarios

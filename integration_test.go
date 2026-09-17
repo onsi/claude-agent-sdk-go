@@ -593,6 +593,14 @@ func (i *integrationMockTransport) Interrupt(ctx context.Context) error {
 	return nil
 }
 
+func (i *integrationMockTransport) StopTask(_ context.Context, _ string) error {
+	return nil
+}
+
+func (i *integrationMockTransport) BackgroundTasks(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
 func (i *integrationMockTransport) Close() error {
 	i.mu.Lock()
 	defer i.mu.Unlock()

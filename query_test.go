@@ -905,6 +905,14 @@ func (q *queryMockTransport) Interrupt(_ context.Context) error {
 	return nil
 }
 
+func (q *queryMockTransport) StopTask(_ context.Context, _ string) error {
+	return nil
+}
+
+func (q *queryMockTransport) BackgroundTasks(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+
 func (q *queryMockTransport) SetModel(_ context.Context, _ *string) error {
 	return nil
 }

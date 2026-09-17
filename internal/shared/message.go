@@ -185,6 +185,186 @@ func (m *SystemMessage) MarshalJSON() ([]byte, error) {
 	return json.Marshal(data)
 }
 
+// System message subtypes that carry a task's lifecycle. A task is a subagent
+// spawned by the Agent/Task tool, a background Bash command, or similar work
+// the CLI tracks by task ID.
+const (
+	SystemSubtypeTaskStarted      = "task_started"
+	SystemSubtypeTaskProgress     = "task_progress"
+	SystemSubtypeTaskUpdated      = "task_updated"
+	SystemSubtypeTaskNotification = "task_notification"
+)
+
+// Terminal task statuses carried by TaskNotificationMessage.Status.
+const (
+	TaskNotificationStatusCompleted = "completed"
+	TaskNotificationStatusFailed    = "failed"
+	TaskNotificationStatusStopped   = "stopped"
+)
+
+// TaskUsage is the running cost of a task.
+type TaskUsage struct {
+	TotalTokens int   `json:"total_tokens"`
+	ToolUses    int   `json:"tool_uses"`
+	DurationMs  int64 `json:"duration_ms"`
+}
+
+// TaskStartedMessage announces a new task. TaskID is the handle StopTask takes;
+// ToolUseID correlates the task with the tool_use block that started it.
+type TaskStartedMessage struct {
+	Subtype        string  `json:"subtype"`
+	TaskID         string  `json:"task_id"`
+	ToolUseID      *string `json:"tool_use_id,omitempty"`
+	Description    string  `json:"description"`
+	SubagentType   *string `json:"subagent_type,omitempty"`
+	IsBackgrounded *bool   `json:"is_backgrounded,omitempty"`
+	// SpawnDepth is 1 for a subagent spawned by the main agent and N+1 for one
+	// spawned inside a depth-N subagent. It is unset for other kinds of task.
+	SpawnDepth     *int    `json:"spawn_depth,omitempty"`
+	TaskType       *string `json:"task_type,omitempty"`
+	WorkflowName   *string `json:"workflow_name,omitempty"`
+	Prompt         *string `json:"prompt,omitempty"`
+	SkipTranscript *bool   `json:"skip_transcript,omitempty"`
+	UUID           string  `json:"uuid,omitempty"`
+	SessionID      string  `json:"session_id,omitempty"`
+	// Data holds the message exactly as the CLI sent it, including fields this
+	// type does not model.
+	Data map[string]any `json:"-"`
+}
+
+// Type returns the message type for TaskStartedMessage.
+func (m *TaskStartedMessage) Type() string {
+	return MessageTypeSystem
+}
+
+// MarshalJSON implements custom JSON marshaling for TaskStartedMessage.
+func (m *TaskStartedMessage) MarshalJSON() ([]byte, error) {
+	type taskStartedMessage TaskStartedMessage
+	return json.Marshal(struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+		*taskStartedMessage
+	}{
+		Type:               MessageTypeSystem,
+		Subtype:            SystemSubtypeTaskStarted,
+		taskStartedMessage: (*taskStartedMessage)(m),
+	})
+}
+
+// TaskProgressMessage reports a running task's progress.
+type TaskProgressMessage struct {
+	Subtype      string    `json:"subtype"`
+	TaskID       string    `json:"task_id"`
+	ToolUseID    *string   `json:"tool_use_id,omitempty"`
+	Description  string    `json:"description"`
+	SubagentType *string   `json:"subagent_type,omitempty"`
+	Usage        TaskUsage `json:"usage"`
+	LastToolName *string   `json:"last_tool_name,omitempty"`
+	Summary      *string   `json:"summary,omitempty"`
+	UUID         string    `json:"uuid,omitempty"`
+	SessionID    string    `json:"session_id,omitempty"`
+	// Data holds the message exactly as the CLI sent it.
+	Data map[string]any `json:"-"`
+}
+
+// Type returns the message type for TaskProgressMessage.
+func (m *TaskProgressMessage) Type() string {
+	return MessageTypeSystem
+}
+
+// MarshalJSON implements custom JSON marshaling for TaskProgressMessage.
+func (m *TaskProgressMessage) MarshalJSON() ([]byte, error) {
+	type taskProgressMessage TaskProgressMessage
+	return json.Marshal(struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+		*taskProgressMessage
+	}{
+		Type:                MessageTypeSystem,
+		Subtype:             SystemSubtypeTaskProgress,
+		taskProgressMessage: (*taskProgressMessage)(m),
+	})
+}
+
+// TaskUpdatePatch holds the task fields that changed. Nil fields did not change.
+type TaskUpdatePatch struct {
+	// Status is one of pending, running, completed, failed, killed or paused.
+	Status         *string `json:"status,omitempty"`
+	Description    *string `json:"description,omitempty"`
+	EndTime        *int64  `json:"end_time,omitempty"`
+	TotalPausedMs  *int64  `json:"total_paused_ms,omitempty"`
+	Error          *string `json:"error,omitempty"`
+	IsBackgrounded *bool   `json:"is_backgrounded,omitempty"`
+}
+
+// TaskUpdatedMessage reports a change to a task's state, such as a foreground
+// task moving to the background.
+type TaskUpdatedMessage struct {
+	Subtype   string          `json:"subtype"`
+	TaskID    string          `json:"task_id"`
+	Patch     TaskUpdatePatch `json:"patch"`
+	UUID      string          `json:"uuid,omitempty"`
+	SessionID string          `json:"session_id,omitempty"`
+	// Data holds the message exactly as the CLI sent it.
+	Data map[string]any `json:"-"`
+}
+
+// Type returns the message type for TaskUpdatedMessage.
+func (m *TaskUpdatedMessage) Type() string {
+	return MessageTypeSystem
+}
+
+// MarshalJSON implements custom JSON marshaling for TaskUpdatedMessage.
+func (m *TaskUpdatedMessage) MarshalJSON() ([]byte, error) {
+	type taskUpdatedMessage TaskUpdatedMessage
+	return json.Marshal(struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+		*taskUpdatedMessage
+	}{
+		Type:               MessageTypeSystem,
+		Subtype:            SystemSubtypeTaskUpdated,
+		taskUpdatedMessage: (*taskUpdatedMessage)(m),
+	})
+}
+
+// TaskNotificationMessage reports that a task has finished. Status is one of
+// the TaskNotificationStatus constants; a task ended by StopTask reports
+// TaskNotificationStatusStopped.
+type TaskNotificationMessage struct {
+	Subtype        string     `json:"subtype"`
+	TaskID         string     `json:"task_id"`
+	ToolUseID      *string    `json:"tool_use_id,omitempty"`
+	Status         string     `json:"status"`
+	OutputFile     string     `json:"output_file"`
+	Summary        string     `json:"summary"`
+	Usage          *TaskUsage `json:"usage,omitempty"`
+	SkipTranscript *bool      `json:"skip_transcript,omitempty"`
+	UUID           string     `json:"uuid,omitempty"`
+	SessionID      string     `json:"session_id,omitempty"`
+	// Data holds the message exactly as the CLI sent it.
+	Data map[string]any `json:"-"`
+}
+
+// Type returns the message type for TaskNotificationMessage.
+func (m *TaskNotificationMessage) Type() string {
+	return MessageTypeSystem
+}
+
+// MarshalJSON implements custom JSON marshaling for TaskNotificationMessage.
+func (m *TaskNotificationMessage) MarshalJSON() ([]byte, error) {
+	type taskNotificationMessage TaskNotificationMessage
+	return json.Marshal(struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+		*taskNotificationMessage
+	}{
+		Type:                    MessageTypeSystem,
+		Subtype:                 SystemSubtypeTaskNotification,
+		taskNotificationMessage: (*taskNotificationMessage)(m),
+	})
+}
+
 // ResultMessage represents the final result of a conversation turn.
 type ResultMessage struct {
 	MessageType      string          `json:"type"`

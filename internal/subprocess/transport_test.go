@@ -648,19 +648,6 @@ func TestTransportInterruptErrorPaths(t *testing.T) {
 			t.Error("Expected error when interrupting closed transport")
 		}
 	})
-
-	if runtime.GOOS != windowsOS {
-		t.Run("interrupt_signal_error", func(t *testing.T) {
-			transport := setupTransportForTest(t, newTransportMockCLI())
-			defer disconnectTransportSafely(t, transport)
-
-			connectTransportSafely(ctx, t, transport)
-
-			// Normal interrupt should work
-			err := transport.Interrupt(ctx)
-			assertNoTransportError(t, err)
-		})
-	}
 }
 
 // TestTransportControlProtocolIntegration tests that SetModel and SetPermissionMode
@@ -701,6 +688,82 @@ func TestTransportControlProtocolIntegration(t *testing.T) {
 			},
 			wantErr:   true,
 			errSubstr: "one-shot mode",
+		},
+		{
+			name: "Interrupt_requires_streaming_mode",
+			setup: func() *Transport {
+				return NewWithPrompt(newTransportMockCLI(), &shared.Options{}, "test prompt")
+			},
+			operation: func(ctx context.Context, t *Transport) error {
+				return t.Interrupt(ctx)
+			},
+			wantErr:   true,
+			errSubstr: "Interrupt not available in one-shot mode",
+		},
+		{
+			name: "StopTask_requires_streaming_mode",
+			setup: func() *Transport {
+				return NewWithPrompt(newTransportMockCLI(), &shared.Options{}, "test prompt")
+			},
+			operation: func(ctx context.Context, t *Transport) error {
+				return t.StopTask(ctx, "task-1")
+			},
+			wantErr:   true,
+			errSubstr: "StopTask not available in one-shot mode",
+		},
+		{
+			name: "BackgroundTasks_requires_streaming_mode",
+			setup: func() *Transport {
+				return NewWithPrompt(newTransportMockCLI(), &shared.Options{}, "test prompt")
+			},
+			operation: func(ctx context.Context, t *Transport) error {
+				_, err := t.BackgroundTasks(ctx, "")
+				return err
+			},
+			wantErr:   true,
+			errSubstr: "BackgroundTasks not available in one-shot mode",
+		},
+		{
+			name: "StopTask_requires_connection",
+			setup: func() *Transport {
+				return setupTransportForTest(t, newTransportMockCLI())
+			},
+			operation: func(ctx context.Context, t *Transport) error {
+				return t.StopTask(ctx, "task-1")
+			},
+			wantErr:   true,
+			errSubstr: "not connected",
+		},
+		{
+			name: "Interrupt_in_streaming_mode_with_protocol",
+			setup: func() *Transport {
+				return setupTransportForTest(t, newTransportMockCLIWithControlProtocol())
+			},
+			operation: func(ctx context.Context, t *Transport) error {
+				return t.Interrupt(ctx)
+			},
+			skipWindows: true,
+		},
+		{
+			name: "StopTask_in_streaming_mode_with_protocol",
+			setup: func() *Transport {
+				return setupTransportForTest(t, newTransportMockCLIWithControlProtocol())
+			},
+			operation: func(ctx context.Context, t *Transport) error {
+				return t.StopTask(ctx, "task-1")
+			},
+			skipWindows: true,
+		},
+		{
+			name: "BackgroundTasks_in_streaming_mode_with_protocol",
+			setup: func() *Transport {
+				return setupTransportForTest(t, newTransportMockCLIWithControlProtocol())
+			},
+			operation: func(ctx context.Context, t *Transport) error {
+				_, err := t.BackgroundTasks(ctx, "toolu_1")
+				return err
+			},
+			skipWindows: true,
 		},
 		{
 			name: "SetModel_requires_connection",

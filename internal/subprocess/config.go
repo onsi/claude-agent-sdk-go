@@ -79,6 +79,59 @@ func (t *Transport) GetValidator() *shared.StreamValidator {
 	return t.validator
 }
 
+// controlProtocol returns the control protocol for op, which is only
+// available on a connected streaming-mode transport. The lock is released
+// before the caller's request so a Close is never held behind a CLI round trip.
+func (t *Transport) controlProtocol(op string) (*control.Protocol, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if !t.connected {
+		return nil, fmt.Errorf("transport not connected")
+	}
+	if t.closeStdin {
+		return nil, fmt.Errorf("%s not available in one-shot mode", op)
+	}
+	if t.protocol == nil {
+		return nil, fmt.Errorf("control protocol not initialized")
+	}
+	return t.protocol, nil
+}
+
+// Interrupt stops the current turn with an in-band interrupt control request.
+// The CLI process keeps running and the session accepts further messages.
+// One-shot mode has no control protocol, so Interrupt returns an error there
+// rather than signalling the process.
+func (t *Transport) Interrupt(ctx context.Context) error {
+	protocol, err := t.controlProtocol("Interrupt")
+	if err != nil {
+		return err
+	}
+	return protocol.Interrupt(ctx)
+}
+
+// StopTask stops the running task identified by taskID, as reported by a
+// task_started system message. The CLI confirms with a task_notification whose
+// status is "stopped".
+func (t *Transport) StopTask(ctx context.Context, taskID string) error {
+	protocol, err := t.controlProtocol("StopTask")
+	if err != nil {
+		return err
+	}
+	return protocol.StopTask(ctx, taskID)
+}
+
+// BackgroundTasks moves in-flight foreground tasks to the background; with a
+// non-empty toolUseID only the task started by that tool_use block is moved.
+// It reports whether any task was backgrounded.
+func (t *Transport) BackgroundTasks(ctx context.Context, toolUseID string) (bool, error) {
+	protocol, err := t.controlProtocol("BackgroundTasks")
+	if err != nil {
+		return false, err
+	}
+	return protocol.BackgroundTasks(ctx, toolUseID)
+}
+
 // SetModel changes the AI model during a streaming session.
 // This method requires control protocol integration which is only available
 // in streaming mode (when closeStdin is false).

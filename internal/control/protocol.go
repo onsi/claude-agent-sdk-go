@@ -503,6 +503,38 @@ func (p *Protocol) RewindFiles(ctx context.Context, userMessageID string) error 
 	return err
 }
 
+// StopTask stops the running task identified by taskID. The CLI reports the
+// outcome with a task_notification system message whose status is "stopped".
+func (p *Protocol) StopTask(ctx context.Context, taskID string) error {
+	_, err := p.SendControlRequest(ctx, StopTaskRequest{
+		Subtype: SubtypeStopTask,
+		TaskID:  taskID,
+	}, 5*time.Second)
+
+	return err
+}
+
+// BackgroundTasks moves in-flight foreground tasks to the background. With a
+// non-empty toolUseID only the task started by that tool_use block is moved.
+// It reports whether any task was backgrounded.
+func (p *Protocol) BackgroundTasks(ctx context.Context, toolUseID string) (bool, error) {
+	result, err := p.SendControlRequest(ctx, BackgroundTasksRequest{
+		Subtype:   SubtypeBackgroundTasks,
+		ToolUseID: toolUseID,
+	}, 5*time.Second)
+	if err != nil {
+		return false, err
+	}
+
+	// A success response without the field counts as backgrounded, matching the
+	// TypeScript SDK.
+	resp, _ := result.(map[string]any)
+	if backgrounded, ok := resp["backgrounded"].(bool); ok {
+		return backgrounded, nil
+	}
+	return true, nil
+}
+
 // ReceiveMessages returns a channel for receiving regular (non-control) messages.
 func (p *Protocol) ReceiveMessages() <-chan map[string]any {
 	return p.messageStream

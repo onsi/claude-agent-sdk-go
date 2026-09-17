@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"sync"
 
 	"github.com/severity1/claude-agent-sdk-go/internal/cli"
@@ -331,24 +330,6 @@ func (t *Transport) ReceiveMessages(_ context.Context) (<-chan shared.Message, <
 	}
 
 	return t.msgChan, t.errChan
-}
-
-// Interrupt sends an interrupt signal to the subprocess.
-func (t *Transport) Interrupt(_ context.Context) error {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-
-	if !t.connected || t.cmd == nil || t.cmd.Process == nil {
-		return fmt.Errorf("process not running")
-	}
-
-	// Windows doesn't support os.Interrupt signal
-	if runtime.GOOS == windowsOS {
-		return fmt.Errorf("interrupt not supported by windows")
-	}
-
-	// Send interrupt signal (Unix/Linux/macOS)
-	return t.cmd.Process.Signal(os.Interrupt)
 }
 
 // Close terminates the subprocess connection.

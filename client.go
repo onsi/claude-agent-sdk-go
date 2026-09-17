@@ -21,7 +21,18 @@ type Client interface {
 	QueryStream(ctx context.Context, messages <-chan StreamMessage) error
 	ReceiveMessages(ctx context.Context) <-chan Message
 	ReceiveResponse(ctx context.Context) MessageIterator
+	// Interrupt stops the current turn. The session stays connected and
+	// accepts the next Query. Only works in streaming mode (after Connect()).
 	Interrupt(ctx context.Context) error
+	// StopTask stops one running task, such as a subagent, by the TaskID of
+	// its TaskStartedMessage. The rest of the turn continues.
+	// Only works in streaming mode (after Connect()).
+	StopTask(ctx context.Context, taskID string) error
+	// BackgroundTasks moves in-flight foreground tasks to the background so
+	// the turn continues without waiting on them. A non-empty toolUseID
+	// targets the task started by that tool_use block; empty targets all.
+	// Only works in streaming mode (after Connect()).
+	BackgroundTasks(ctx context.Context, toolUseID string) (bool, error)
 	// SetModel changes the AI model during a streaming session.
 	// Pass nil to reset to the default model.
 	// Only works in streaming mode (after Connect()).
@@ -466,19 +477,57 @@ func (c *ClientImpl) ReceiveResponse(_ context.Context) MessageIterator {
 	}
 }
 
-// Interrupt sends an interrupt signal to stop the current operation.
+// Interrupt stops the current turn by sending an interrupt control request to
+// the CLI. The CLI process is not signalled: an interrupted turn still ends
+// with its ResultMessage, and the client stays connected, ready for the next
+// Query. Returns error if not connected or if the control request fails.
 func (c *ClientImpl) Interrupt(ctx context.Context) error {
-	// Check context before proceeding
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-
-	transport, err := c.liveTransport()
+	transport, err := c.connectedTransport(ctx)
 	if err != nil {
 		return err
 	}
-
 	return transport.Interrupt(ctx)
+}
+
+// StopTask stops the running task identified by taskID, the TaskID of a
+// TaskStartedMessage. The CLI reports the outcome with a
+// TaskNotificationMessage whose Status is TaskNotificationStatusStopped.
+// Returns error if not connected or if the control request fails.
+//
+// Example:
+//
+//	if started, ok := msg.(*claudecode.TaskStartedMessage); ok {
+//	    err := client.StopTask(ctx, started.TaskID)
+//	}
+func (c *ClientImpl) StopTask(ctx context.Context, taskID string) error {
+	transport, err := c.connectedTransport(ctx)
+	if err != nil {
+		return err
+	}
+	return transport.StopTask(ctx, taskID)
+}
+
+// BackgroundTasks moves in-flight foreground tasks (Bash commands and
+// subagents) to the background: each blocking tool call returns at once and
+// the turn continues, while the task keeps running and later reports a
+// TaskNotificationMessage. A non-empty toolUseID targets only the task started
+// by that tool_use block. It returns false only when toolUseID matched no
+// foreground task.
+// Returns error if not connected or if the control request fails.
+func (c *ClientImpl) BackgroundTasks(ctx context.Context, toolUseID string) (bool, error) {
+	transport, err := c.connectedTransport(ctx)
+	if err != nil {
+		return false, err
+	}
+	return transport.BackgroundTasks(ctx, toolUseID)
+}
+
+func (c *ClientImpl) connectedTransport(ctx context.Context) (Transport, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	return c.liveTransport()
 }
 
 // SetModel changes the AI model during a streaming session.

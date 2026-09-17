@@ -267,17 +267,50 @@ func (p *Parser) parseAssistantMessage(data map[string]any) (*shared.AssistantMe
 	}, nil
 }
 
-// parseSystemMessage parses a system message from raw JSON data.
-func (p *Parser) parseSystemMessage(data map[string]any) (*shared.SystemMessage, error) {
+// parseSystemMessage parses a system message from raw JSON data. Task
+// lifecycle subtypes become typed messages; every other subtype stays a
+// generic SystemMessage.
+func (p *Parser) parseSystemMessage(data map[string]any) (shared.Message, error) {
 	subtype, ok := data["subtype"].(string)
 	if !ok {
 		return nil, shared.NewMessageParseError("system message missing subtype field", data)
 	}
 
+	var msg shared.Message
+	var taskID *string
+	switch subtype {
+	case shared.SystemSubtypeTaskStarted:
+		m := &shared.TaskStartedMessage{Data: data}
+		msg, taskID = m, &m.TaskID
+	case shared.SystemSubtypeTaskProgress:
+		m := &shared.TaskProgressMessage{Data: data}
+		msg, taskID = m, &m.TaskID
+	case shared.SystemSubtypeTaskUpdated:
+		m := &shared.TaskUpdatedMessage{Data: data}
+		msg, taskID = m, &m.TaskID
+	case shared.SystemSubtypeTaskNotification:
+		m := &shared.TaskNotificationMessage{Data: data}
+		msg, taskID = m, &m.TaskID
+	}
+
+	// A task message whose shape does not decode is still delivered, as a
+	// generic SystemMessage, rather than as an error that ends the caller's
+	// iteration.
+	if msg != nil && decodeTaskMessage(data, msg) && *taskID != "" {
+		return msg, nil
+	}
 	return &shared.SystemMessage{
 		Subtype: subtype,
 		Data:    data, // Preserve all original data
 	}, nil
+}
+
+func decodeTaskMessage(data map[string]any, msg shared.Message) bool {
+	raw, err := json.Marshal(data)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(raw, msg) == nil
 }
 
 // parseResultMessage parses a result message from raw JSON data.
