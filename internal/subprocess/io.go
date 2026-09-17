@@ -81,6 +81,7 @@ func (t *Transport) handleStdout(stdout io.Reader, proc *process) {
 
 			// Track regular message for stream validation
 			t.validator.TrackMessage(msg)
+			t.endQueryInput(msg)
 
 			select {
 			case t.msgChan <- msg:
@@ -142,6 +143,17 @@ func (t *Transport) handleStderrCallback(stderr io.Reader) {
 		}()
 	}
 	// Silently ignore scanner errors (matches Python SDK's except Exception: pass)
+}
+
+// endQueryInput closes stdin once a one-shot query's result arrives, which
+// is what makes a CLI in streaming input mode exit.
+func (t *Transport) endQueryInput(msg shared.Message) {
+	if t.queryPrompt == nil {
+		return
+	}
+	if _, ok := msg.(*shared.ResultMessage); ok {
+		_ = t.stdin.Close()
+	}
 }
 
 // routeInitError checks if a message is an error ResultMessage arriving before

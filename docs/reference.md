@@ -28,8 +28,8 @@ The Go SDK provides two ways to interact with Claude Code:
 | **Connection**      | Managed automatically         | Manual or WithClient helper        |
 | **Streaming**       | Via MessageIterator           | Via channels or iterator           |
 | **Interrupts**      | Not supported                 | Supported                          |
-| **Hooks**           | Not supported                 | Supported                          |
-| **Custom Tools**    | Not supported                 | Supported                          |
+| **Hooks**           | Supported                     | Supported                          |
+| **Custom Tools**    | Supported                     | Supported                          |
 | **Continue Chat**   | New session each time         | Maintains conversation             |
 | **Use Case**        | One-off tasks                 | Continuous conversations           |
 
@@ -1048,7 +1048,8 @@ func WithStderrCallback(callback func(string)) Option
 
 #### `WithCanUseTool()`
 
-Set a callback for programmatic tool permission control.
+Set a callback for programmatic tool permission control. It is honoured by both `Query()` and
+`Client`; with `Query()` it switches the CLI to streaming input so the callback can be consulted.
 
 ```go
 func WithCanUseTool(callback CanUseToolCallback) Option

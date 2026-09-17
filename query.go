@@ -16,6 +16,12 @@ var ErrNoMoreMessages = errors.New("no more messages")
 // Query executes a one-shot query with automatic cleanup.
 // This follows the Python SDK pattern but uses dependency injection for transport.
 //
+// Permission callbacks (WithCanUseTool), hooks and SDK MCP servers are
+// honoured as they are by Client: with any of them set, the CLI runs in
+// streaming input mode, the prompt is written to its stdin after the control
+// handshake, and stdin is closed once the ResultMessage arrives. Otherwise the
+// prompt is passed on the command line with --print.
+//
 // The CLI process starts on the first call to Next. Once Next returns a
 // non-nil error — ErrNoMoreMessages when the stream ends cleanly, a
 // *ProcessError when the CLI exited with a non-zero status or a signal, or any
@@ -25,9 +31,10 @@ var ErrNoMoreMessages = errors.New("no more messages")
 // in every case.
 func Query(ctx context.Context, prompt string, opts ...Option) (MessageIterator, error) {
 	options := NewOptions(opts...)
+	if err := prepareOptions(options); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
 
-	// For one-shot queries, create a transport that passes prompt as CLI argument
-	// This matches the Python SDK behavior where prompt is passed via --print flag
 	transport, err := createQueryTransport(prompt, options)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create query transport: %w", err)
@@ -176,7 +183,7 @@ func (qi *queryIterator) start() error {
 	return nil
 }
 
-// createQueryTransport creates a transport for one-shot queries with prompt as CLI argument.
+// createQueryTransport creates a transport for a one-shot query.
 //
 // If the caller supplied a CLI path via WithCLIPath, that path is used directly
 // and CLI auto-discovery is skipped. This matches the documented behaviour of
@@ -189,7 +196,6 @@ func createQueryTransport(prompt string, options *Options) (Transport, error) {
 		return nil, err
 	}
 
-	// Create subprocess transport with prompt as CLI argument
 	return subprocess.NewWithPrompt(cliPath, options, prompt), nil
 }
 

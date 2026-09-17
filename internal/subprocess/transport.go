@@ -28,12 +28,13 @@ const (
 // Transport implements the Transport interface using subprocess communication.
 type Transport struct {
 	// Process management
-	cmd        *exec.Cmd
-	cliPath    string
-	options    *shared.Options
-	closeStdin bool
-	promptArg  *string // For one-shot queries, prompt passed as CLI argument
-	entrypoint string  // CLAUDE_CODE_ENTRYPOINT value (sdk-go or sdk-go-client)
+	cmd         *exec.Cmd
+	cliPath     string
+	options     *shared.Options
+	closeStdin  bool
+	promptArg   *string // For one-shot queries, prompt passed as CLI argument
+	queryPrompt *string // For one-shot queries, prompt written to stdin after the control handshake
+	entrypoint  string  // CLAUDE_CODE_ENTRYPOINT value (sdk-go or sdk-go-client)
 
 	// proc is guarded by procMu as well as mu so Done and Err never wait on a
 	// Close that holds mu while the child terminates.
@@ -92,17 +93,26 @@ func New(cliPath string, options *shared.Options, closeStdin bool, entrypoint st
 	}
 }
 
-// NewWithPrompt creates a new subprocess transport for one-shot queries with prompt as CLI argument.
+// NewWithPrompt creates a new subprocess transport for a one-shot query.
+// The prompt is passed as a CLI argument, unless options carry a permission
+// callback, hooks or SDK MCP servers: the CLI can only consult those over the
+// control protocol, so the prompt is then written to stdin in streaming input
+// mode and stdin is closed once the result arrives.
 func NewWithPrompt(cliPath string, options *shared.Options, prompt string) *Transport {
-	return &Transport{
+	t := &Transport{
 		cliPath:    cliPath,
 		options:    options,
 		closeStdin: true,
 		entrypoint: "sdk-go", // Query mode uses sdk-go
 		parser:     newParser(options),
 		validator:  shared.NewStreamValidator(),
-		promptArg:  &prompt,
 	}
+	if needsControlCallbacks(options) {
+		t.queryPrompt = &prompt
+	} else {
+		t.promptArg = &prompt
+	}
+	return t
 }
 
 // newParser creates a parser using the buffer size from options, or the default.
@@ -116,7 +126,7 @@ func newParser(options *shared.Options) *parser.Parser {
 // streamingInput reports whether the CLI reads stream-json from stdin and so
 // can speak the control protocol.
 func (t *Transport) streamingInput() bool {
-	return !t.closeStdin
+	return !t.closeStdin || t.queryPrompt != nil
 }
 
 // IsConnected returns whether the transport is currently connected.
@@ -244,8 +254,18 @@ func (t *Transport) buildArgs(opts *shared.Options) []string {
 	return cli.BuildCommand(t.cliPath, opts, !t.streamingInput())
 }
 
+// queryUserMessage is the stream-json user message carrying a one-shot prompt.
+func queryUserMessage(prompt string) shared.StreamMessage {
+	return shared.StreamMessage{
+		Type:      "user",
+		Message:   map[string]any{"role": "user", "content": prompt},
+		SessionID: "default",
+	}
+}
+
 // setupControlProtocol starts the control protocol, when the CLI reads
-// streaming input, and performs the handshake if any option needs it.
+// streaming input, performs the handshake if any option needs it, and then
+// writes a one-shot query's prompt.
 func (t *Transport) setupControlProtocol(ctx context.Context) error {
 	if t.protocol == nil {
 		return nil
@@ -262,6 +282,9 @@ func (t *Transport) setupControlProtocol(ctx context.Context) error {
 		}
 	}
 
+	if t.queryPrompt != nil {
+		return t.writeMessage(t.stdin, queryUserMessage(*t.queryPrompt))
+	}
 	return nil
 }
 
@@ -270,16 +293,25 @@ func (t *Transport) needsProtocolHandshake() bool {
 	if t.options == nil {
 		return false
 	}
-	return t.options.Hooks != nil ||
-		t.options.CanUseTool != nil ||
-		t.options.EnableFileCheckpointing ||
-		hasSdkMcpServers(t.options)
+	return needsControlCallbacks(t.options) || t.options.EnableFileCheckpointing
+}
+
+// needsControlCallbacks reports whether options carry anything the CLI calls
+// back into over the control protocol.
+func needsControlCallbacks(options *shared.Options) bool {
+	if options == nil {
+		return false
+	}
+	return options.Hooks != nil ||
+		options.CanUseTool != nil ||
+		hasSdkMcpServers(options)
 }
 
 // SendMessage sends a message to the CLI subprocess.
 func (t *Transport) SendMessage(ctx context.Context, message shared.StreamMessage) error {
-	// A one-shot query's prompt is already on the command line.
-	if t.promptArg != nil {
+	// A one-shot query's prompt is already on the command line or was written
+	// by Connect.
+	if t.promptArg != nil || t.queryPrompt != nil {
 		return nil
 	}
 

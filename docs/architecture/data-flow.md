@@ -49,6 +49,13 @@ Query(ctx, "prompt", opts...)
                       └─► Clean up resources
 ```
 
+When options carry a permission callback, hooks or SDK MCP servers, the CLI can only consult them
+over the control protocol. `NewWithPrompt` then starts the CLI with `--input-format stream-json`
+instead of `--print`; `Connect` performs the `initialize` handshake, writes the prompt to stdin as
+a user message, and `handleStdout` closes stdin when the `ResultMessage` arrives so the CLI exits.
+`Query` also applies the `CanUseTool` ⇒ `--permission-prompt-tool stdio` default that `Connect`
+applies.
+
 ### Sequence Diagram
 
 ```
