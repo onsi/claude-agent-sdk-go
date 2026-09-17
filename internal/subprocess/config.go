@@ -3,6 +3,7 @@ package subprocess
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -99,7 +100,9 @@ func (t *Transport) controlProtocol(op string) (*control.Protocol, error) {
 }
 
 // Interrupt stops the current turn with an in-band interrupt control request.
-// The CLI process keeps running and the session accepts further messages.
+// The CLI process keeps running and the session accepts further messages. An
+// interrupt the CLI drops because it had not started the turn yet is sent
+// again when the turn announces itself.
 // One-shot mode has no control protocol, so Interrupt returns an error there
 // rather than signalling the process.
 func (t *Transport) Interrupt(ctx context.Context) error {
@@ -107,7 +110,19 @@ func (t *Transport) Interrupt(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	t.pickup.stopped()
 	return protocol.Interrupt(ctx)
+}
+
+// repeatInterrupt re-sends a stop the CLI dropped because it had not started
+// the turn yet. Nothing waits on the outcome, and a transport being torn down
+// is the expected way for it to fail.
+func (t *Transport) repeatInterrupt(ctx context.Context) {
+	err := t.Interrupt(ctx)
+	if err == nil || ctx.Err() != nil || errors.Is(err, control.ErrProtocolClosed) {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "claude-agent-sdk: failed to repeat an interrupt the CLI dropped: %v\n", err)
 }
 
 // StopTask stops the running task identified by taskID, as reported by a

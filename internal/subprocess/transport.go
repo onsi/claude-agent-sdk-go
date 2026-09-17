@@ -61,6 +61,9 @@ type Transport struct {
 	// Temporary files (cleaned up on Close)
 	mcpConfigFile *os.File // Temporary MCP config file
 
+	// pickup arms the repeat of an interrupt the CLI dropped as idle.
+	pickup pickup
+
 	// Message parsing
 	parser *parser.Parser
 
@@ -345,13 +348,22 @@ func (t *Transport) SendMessage(ctx context.Context, message shared.StreamMessag
 	return nil
 }
 
-// writeMessage writes message to stdin as one JSON line.
+// writeMessage writes message to stdin as one JSON line. A user message opens
+// the pickup window before it is written, since the CLI can read it the moment
+// it lands.
 func (t *Transport) writeMessage(stdin *stdinWriter, message shared.StreamMessage) error {
 	data, err := json.Marshal(message)
 	if err != nil {
 		return fmt.Errorf("failed to marshal message: %w", err)
 	}
+	dispatch := message.Type == "user" && t.streamingInput()
+	if dispatch {
+		t.pickup.dispatched()
+	}
 	if _, err := stdin.Write(append(data, '\n')); err != nil {
+		if dispatch {
+			t.pickup.reset()
+		}
 		return fmt.Errorf("failed to write message: %w", err)
 	}
 	return nil

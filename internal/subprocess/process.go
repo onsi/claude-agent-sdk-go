@@ -194,6 +194,7 @@ func (t *Transport) cleanup() {
 	t.protocol = nil
 	t.protocolAdapter = nil
 	t.stdin = nil
+	t.pickup.reset()
 
 	// Reset state
 	t.cmd = nil

@@ -82,6 +82,7 @@ func (t *Transport) handleStdout(stdout io.Reader, proc *process) {
 			// Track regular message for stream validation
 			t.validator.TrackMessage(msg)
 			t.endQueryInput(msg)
+			t.notePickup(msg)
 
 			select {
 			case t.msgChan <- msg:
@@ -153,6 +154,23 @@ func (t *Transport) endQueryInput(msg shared.Message) {
 	}
 	if _, ok := msg.(*shared.ResultMessage); ok {
 		_ = t.stdin.Close()
+	}
+}
+
+// notePickup follows the turn the CLI is running: its init message closes the
+// pickup window and repeats an interrupt dropped inside it, and a result ends
+// the turn whether or not one ever started.
+func (t *Transport) notePickup(msg shared.Message) {
+	switch m := msg.(type) {
+	case *shared.SystemMessage:
+		if m.Subtype != "init" {
+			return
+		}
+		if t.pickup.started() {
+			go t.repeatInterrupt(t.ctx)
+		}
+	case *shared.ResultMessage:
+		t.pickup.reset()
 	}
 }
 

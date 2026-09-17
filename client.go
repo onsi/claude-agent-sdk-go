@@ -480,9 +480,12 @@ func (c *ClientImpl) ReceiveResponse(_ context.Context) MessageIterator {
 }
 
 // Interrupt stops the current turn by sending an interrupt control request to
-// the CLI. The CLI process is not signalled: an interrupted turn still ends
-// with its ResultMessage, and the client stays connected, ready for the next
-// Query. Returns error if not connected or if the control request fails.
+// the CLI. It returns once the CLI acknowledges that request; a CLI that has
+// not yet picked up the user message drops the interrupt as idle, so one
+// issued in that gap is sent again, once, when the turn announces itself. The
+// CLI process is not signalled: an interrupted turn still ends with its
+// ResultMessage, and the client stays connected, ready for the next Query.
+// Returns error if not connected or if the control request fails.
 func (c *ClientImpl) Interrupt(ctx context.Context) error {
 	transport, err := c.connectedTransport(ctx)
 	if err != nil {
