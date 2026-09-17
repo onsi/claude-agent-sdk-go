@@ -22,7 +22,8 @@ type Transport interface {
     // The message channel closes when the stream ends.
     ReceiveMessages(ctx context.Context) (<-chan Message, <-chan error)
 
-    // Interrupt sends an interrupt signal to pause/stop the current operation.
+    // Interrupt stops the current turn via the control protocol, leaving the
+    // session connected.
     Interrupt(ctx context.Context) error
 
     // SetModel changes the AI model during a streaming session.
@@ -278,7 +279,7 @@ type Client interface {
 - `ReceiveResponse()` - Get iterator for message-by-message processing
 
 **Control Operations**
-- `Interrupt()` - Stop current operation
+- `Interrupt()` - Stop the current turn; the session stays connected
 - `SetModel()` - Change AI model mid-session
 - `SetPermissionMode()` - Change permission handling
 - `RewindFiles()` - Revert files to checkpoint

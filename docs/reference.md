@@ -373,7 +373,9 @@ func (c *ClientImpl) ReceiveResponse(ctx context.Context) MessageIterator
 
 #### `Interrupt()`
 
-Send interrupt signal to stop current operation.
+Stop the current turn with an `interrupt` control request. The CLI process is not signalled: an
+interrupted turn still ends with its `ResultMessage`, and the client stays connected and accepts the
+next `Query`. Only available in streaming mode.
 
 ```go
 func (c *ClientImpl) Interrupt(ctx context.Context) error

@@ -134,6 +134,8 @@ type Transport interface {
 	Connect(ctx context.Context) error
 	SendMessage(ctx context.Context, message StreamMessage) error
 	ReceiveMessages(ctx context.Context) (<-chan Message, <-chan error)
+	// Interrupt stops the current turn via the control protocol, leaving the
+	// session connected.
 	Interrupt(ctx context.Context) error
 	// SetModel changes the AI model during streaming session.
 	SetModel(ctx context.Context, model *string) error

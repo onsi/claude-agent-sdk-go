@@ -20,6 +20,8 @@ type Client interface {
 	QueryStream(ctx context.Context, messages <-chan StreamMessage) error
 	ReceiveMessages(ctx context.Context) <-chan Message
 	ReceiveResponse(ctx context.Context) MessageIterator
+	// Interrupt stops the current turn. The session stays connected and
+	// accepts the next Query. Only works in streaming mode (after Connect()).
 	Interrupt(ctx context.Context) error
 	// SetModel changes the AI model during a streaming session.
 	// Pass nil to reset to the default model.
@@ -433,24 +435,32 @@ func (c *ClientImpl) ReceiveResponse(_ context.Context) MessageIterator {
 	}
 }
 
-// Interrupt sends an interrupt signal to stop the current operation.
+// Interrupt stops the current turn by sending an interrupt control request to
+// the CLI. The CLI process is not signalled: an interrupted turn still ends
+// with its ResultMessage, and the client stays connected, ready for the next
+// Query. Returns error if not connected or if the control request fails.
 func (c *ClientImpl) Interrupt(ctx context.Context) error {
-	// Check context before proceeding
+	transport, err := c.connectedTransport(ctx)
+	if err != nil {
+		return err
+	}
+	return transport.Interrupt(ctx)
+}
+
+func (c *ClientImpl) connectedTransport(ctx context.Context) (Transport, error) {
 	if ctx.Err() != nil {
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 
-	// Check connection status with read lock
 	c.mu.RLock()
 	connected := c.connected
 	transport := c.transport
 	c.mu.RUnlock()
 
 	if !connected || transport == nil {
-		return fmt.Errorf("client not connected")
+		return nil, fmt.Errorf("client not connected")
 	}
-
-	return transport.Interrupt(ctx)
+	return transport, nil
 }
 
 // SetModel changes the AI model during a streaming session.

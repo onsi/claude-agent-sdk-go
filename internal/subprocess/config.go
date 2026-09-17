@@ -79,6 +79,37 @@ func (t *Transport) GetValidator() *shared.StreamValidator {
 	return t.validator
 }
 
+// controlProtocol returns the control protocol for op, which is only
+// available on a connected streaming-mode transport. The lock is released
+// before the caller's request so a Close is never held behind a CLI round trip.
+func (t *Transport) controlProtocol(op string) (*control.Protocol, error) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+
+	if !t.connected {
+		return nil, fmt.Errorf("transport not connected")
+	}
+	if t.closeStdin {
+		return nil, fmt.Errorf("%s not available in one-shot mode", op)
+	}
+	if t.protocol == nil {
+		return nil, fmt.Errorf("control protocol not initialized")
+	}
+	return t.protocol, nil
+}
+
+// Interrupt stops the current turn with an in-band interrupt control request.
+// The CLI process keeps running and the session accepts further messages.
+// One-shot mode has no control protocol, so Interrupt returns an error there
+// rather than signalling the process.
+func (t *Transport) Interrupt(ctx context.Context) error {
+	protocol, err := t.controlProtocol("Interrupt")
+	if err != nil {
+		return err
+	}
+	return protocol.Interrupt(ctx)
+}
+
 // SetModel changes the AI model during a streaming session.
 // This method requires control protocol integration which is only available
 // in streaming mode (when closeStdin is false).
