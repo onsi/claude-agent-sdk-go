@@ -15,6 +15,14 @@ var ErrNoMoreMessages = errors.New("no more messages")
 
 // Query executes a one-shot query with automatic cleanup.
 // This follows the Python SDK pattern but uses dependency injection for transport.
+//
+// The CLI process starts on the first call to Next. Once Next returns a
+// non-nil error — ErrNoMoreMessages when the stream ends cleanly, a
+// *ProcessError when the CLI exited with a non-zero status or a signal, or any
+// other terminal error — the iterator has already closed its transport,
+// reaping the process and removing its temporary files. Call Close to release
+// them when abandoning the iterator before that point; Close is safe to call
+// in every case.
 func Query(ctx context.Context, prompt string, opts ...Option) (MessageIterator, error) {
 	options := NewOptions(opts...)
 
@@ -87,34 +95,46 @@ func (qi *queryIterator) Next(_ context.Context) (Message, error) {
 
 	// Initialize on first call
 	if !qi.started {
+		qi.started = true
 		if err := qi.start(); err != nil {
 			qi.mu.Unlock()
-			return nil, err
+			return nil, qi.finish(err)
 		}
-		qi.started = true
 	}
 	qi.mu.Unlock()
 
-	// Read from message channels
-	select {
-	case msg, ok := <-qi.msgChan:
-		if !ok {
-			qi.mu.Lock()
-			qi.closed = true
-			qi.mu.Unlock()
-			return nil, ErrNoMoreMessages
+	for {
+		select {
+		case msg, ok := <-qi.msgChan:
+			if ok {
+				return msg, nil
+			}
+			return nil, qi.finish(exitFailure(qi.transport))
+		case err, ok := <-qi.errChan:
+			if !ok {
+				// The error channel closes just before the message channel,
+				// which may still hold buffered messages.
+				qi.errChan = nil
+				continue
+			}
+			return nil, qi.finish(err)
+		case <-qi.ctx.Done():
+			return nil, qi.finish(qi.ctx.Err())
 		}
-		return msg, nil
-	case err := <-qi.errChan:
-		qi.mu.Lock()
-		qi.closed = true
-		qi.mu.Unlock()
-		return nil, err
-	case <-qi.ctx.Done():
-		qi.mu.Lock()
-		qi.closed = true
-		qi.mu.Unlock()
-		return nil, qi.ctx.Err()
+	}
+}
+
+// finish releases the transport and returns err, or ErrNoMoreMessages when
+// neither err nor closing the transport produced an error.
+func (qi *queryIterator) finish(err error) error {
+	closeErr := qi.Close()
+	switch {
+	case err != nil:
+		return err
+	case closeErr != nil:
+		return closeErr
+	default:
+		return ErrNoMoreMessages
 	}
 }
 
