@@ -1094,6 +1094,7 @@ type clientMockTransport struct {
 	setPermissionModeError error
 	rewindFilesError       error
 	getMcpStatusError      error
+	supportedModels        []ModelInfo
 	getMcpStatusResponse   *McpStatusResponse
 	taskError              error
 
@@ -1309,6 +1310,16 @@ func (c *clientMockTransport) GetMcpStatus(_ context.Context) (*McpStatusRespons
 		return c.getMcpStatusResponse, nil
 	}
 	return &McpStatusResponse{McpServers: []McpServerStatus{}}, nil
+}
+
+func (c *clientMockTransport) SupportedModels(_ context.Context) ([]ModelInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.supportedModels, nil
+}
+
+func WithClientSupportedModels(models []ModelInfo) ClientMockTransportOption {
+	return func(t *clientMockTransport) { t.supportedModels = models }
 }
 
 // Streamlined Mock Transport Options - reduced from 11 to 6 essential functions
@@ -2946,6 +2957,28 @@ func testClientGetMcpStatusSuccess(t *testing.T) {
 	}
 	if got.McpServers[0].Status != McpServerConnectionStatusConnected {
 		t.Errorf("expected status connected, got %q", got.McpServers[0].Status)
+	}
+}
+
+func TestClientSupportedModels(t *testing.T) {
+	ctx, cancel := setupClientTestContext(t, 5*time.Second)
+	defer cancel()
+
+	models := []ModelInfo{{Value: "opus[1m]", ResolvedModel: "claude-opus-5-5[1m]", SupportsEffort: true}}
+	client := setupClientForTest(t, newClientMockTransportWithOptions(WithClientSupportedModels(models)))
+	defer disconnectClientSafely(t, client)
+
+	if _, err := client.SupportedModels(ctx); err == nil {
+		t.Fatal("expected an error before Connect")
+	}
+
+	connectClientSafely(ctx, t, client)
+	got, err := client.SupportedModels(ctx)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Value != "opus[1m]" || got[0].ResolvedModel != "claude-opus-5-5[1m]" {
+		t.Errorf("unexpected models: %+v", got)
 	}
 }
 

@@ -183,6 +183,8 @@ type Transport interface {
 	RewindFiles(ctx context.Context, userMessageID string) error
 	// GetMcpStatus returns the connection status of all configured MCP servers.
 	GetMcpStatus(ctx context.Context) (*McpStatusResponse, error)
+	// SupportedModels returns the model roster the CLI reported at initialization.
+	SupportedModels(ctx context.Context) ([]ModelInfo, error)
 	Close() error
 	GetValidator() *StreamValidator
 }
@@ -209,6 +211,9 @@ type InitializeRequest = control.InitializeRequest
 
 // InitializeResponse from CLI with supported capabilities.
 type InitializeResponse = control.InitializeResponse
+
+// ModelInfo is one model the CLI offers, as reported at initialization.
+type ModelInfo = control.ModelInfo
 
 // InterruptRequest to interrupt current operation via control protocol.
 type InterruptRequest = control.InterruptRequest

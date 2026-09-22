@@ -175,6 +175,20 @@ func (t *Transport) RewindFiles(ctx context.Context, userMessageID string) error
 	return protocol.RewindFiles(ctx, userMessageID)
 }
 
+// SupportedModels returns the model roster the CLI reported when the control
+// protocol was initialized, performing the handshake first if it has not run.
+func (t *Transport) SupportedModels(ctx context.Context) ([]control.ModelInfo, error) {
+	protocol, err := t.controlProtocol("SupportedModels")
+	if err != nil {
+		return nil, err
+	}
+	resp, err := protocol.Initialize(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Models, nil
+}
+
 // GetMcpStatus returns the connection status of all configured MCP servers.
 func (t *Transport) GetMcpStatus(ctx context.Context) (*control.McpStatusResponse, error) {
 	protocol, err := t.controlProtocol("GetMcpStatus")

@@ -50,6 +50,10 @@ type Client interface {
 	// GetMcpStatus returns the connection status of all configured MCP servers.
 	// Only works in streaming mode (after Connect()).
 	GetMcpStatus(ctx context.Context) (*McpStatusResponse, error)
+	// SupportedModels returns the models the CLI offers on this account, as its
+	// own model picker lists them. Needs no API call.
+	// Only works in streaming mode (after Connect()).
+	SupportedModels(ctx context.Context) ([]ModelInfo, error)
 	GetStreamIssues() []StreamIssue
 	GetStreamStats() StreamStats
 	GetServerInfo(ctx context.Context) (map[string]interface{}, error)
@@ -640,6 +644,21 @@ func (c *ClientImpl) GetMcpStatus(ctx context.Context) (*McpStatusResponse, erro
 	}
 
 	return transport.GetMcpStatus(ctx)
+}
+
+// SupportedModels returns the models the CLI offers on this account.
+// Returns error if not connected or if the initialize handshake fails.
+func (c *ClientImpl) SupportedModels(ctx context.Context) ([]ModelInfo, error) {
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+
+	transport, err := c.liveTransport()
+	if err != nil {
+		return nil, err
+	}
+
+	return transport.SupportedModels(ctx)
 }
 
 // clientIterator implements MessageIterator for client message reception

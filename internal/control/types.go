@@ -101,6 +101,21 @@ type InitializeRequest struct {
 type InitializeResponse struct {
 	// SupportedCommands lists the control commands supported by this CLI version.
 	SupportedCommands []string `json:"supported_commands,omitempty"`
+	// Models is the model roster the CLI offers on this account, as its own
+	// model picker shows it. Nil when the CLI reported none.
+	Models []ModelInfo `json:"models,omitempty"`
+}
+
+// ModelInfo is one model the CLI offers. Value is what --model and SetModel
+// accept, usually an alias such as "sonnet" or "opus[1m]"; ResolvedModel is the
+// concrete model that alias names on this CLI version.
+type ModelInfo struct {
+	Value                 string   `json:"value"`
+	ResolvedModel         string   `json:"resolvedModel,omitempty"`
+	DisplayName           string   `json:"displayName,omitempty"`
+	Description           string   `json:"description,omitempty"`
+	SupportsEffort        bool     `json:"supportsEffort,omitempty"`
+	SupportedEffortLevels []string `json:"supportedEffortLevels,omitempty"`
 }
 
 // SetPermissionModeRequest changes the permission mode at runtime.

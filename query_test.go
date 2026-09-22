@@ -929,6 +929,10 @@ func (q *queryMockTransport) GetMcpStatus(_ context.Context) (*McpStatusResponse
 	return &McpStatusResponse{}, nil
 }
 
+func (q *queryMockTransport) SupportedModels(_ context.Context) ([]ModelInfo, error) {
+	return nil, nil
+}
+
 func (q *queryMockTransport) Close() error {
 	q.mu.Lock()
 	defer q.mu.Unlock()

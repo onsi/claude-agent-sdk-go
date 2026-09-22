@@ -322,6 +322,52 @@ func testInitializeResponseStructure(t *testing.T) {
 	assertControlEqual(t, "interrupt", resp.SupportedCommands[0])
 }
 
+func TestInitializeKeepsModelRoster(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	transport := newControlMockTransport()
+	protocol := NewProtocol(transport)
+	assertControlNoError(t, protocol.Start(ctx))
+	defer func() { _ = protocol.Close() }()
+
+	go func() {
+		for {
+			transport.mu.Lock()
+			if len(transport.writtenData) > 0 {
+				var req SDKControlRequest
+				err := json.Unmarshal(transport.writtenData[0], &req)
+				transport.mu.Unlock()
+				if err == nil {
+					transport.injectResponse(req.RequestID, map[string]any{
+						"commands": []any{},
+						"models": []any{
+							map[string]any{"value": "opus[1m]", "resolvedModel": "claude-opus-5-5[1m]",
+								"displayName": "Opus (1M context)", "supportsEffort": true,
+								"supportedEffortLevels": []any{"low", "high"}},
+							map[string]any{"value": "haiku", "resolvedModel": "claude-haiku-4-5-20251001"},
+						},
+					})
+				}
+				return
+			}
+			transport.mu.Unlock()
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	resp, err := protocol.Initialize(ctx)
+	assertControlNoError(t, err)
+	if len(resp.Models) != 2 {
+		t.Fatalf("expected 2 models, got %+v", resp.Models)
+	}
+	assertControlEqual(t, "opus[1m]", resp.Models[0].Value)
+	assertControlEqual(t, "claude-opus-5-5[1m]", resp.Models[0].ResolvedModel)
+	assertControlEqual(t, true, resp.Models[0].SupportsEffort)
+	assertControlEqual(t, 2, len(resp.Models[0].SupportedEffortLevels))
+	assertControlEqual(t, false, resp.Models[1].SupportsEffort)
+}
+
 func TestRequestIDGeneration(t *testing.T) {
 	t.Run("format_matches_python_sdk", testRequestIDFormat)
 	t.Run("unique_ids", testRequestIDUniqueness)

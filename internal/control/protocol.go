@@ -424,13 +424,14 @@ func (p *Protocol) Initialize(ctx context.Context) (*InitializeResponse, error) 
 
 		// Parse response
 		var initResp InitializeResponse
-		if resultMap, ok := result.(map[string]any); ok {
-			if cmds, ok := resultMap["supported_commands"].([]any); ok {
-				for _, cmd := range cmds {
-					if cmdStr, ok := cmd.(string); ok {
-						initResp.SupportedCommands = append(initResp.SupportedCommands, cmdStr)
-					}
-				}
+		if result != nil {
+			data, err := json.Marshal(result)
+			if err == nil {
+				err = json.Unmarshal(data, &initResp)
+			}
+			if err != nil {
+				p.initErr = fmt.Errorf("initialize response: %w", err)
+				return
 			}
 		}
 
