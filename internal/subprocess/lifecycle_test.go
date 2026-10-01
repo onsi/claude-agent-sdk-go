@@ -91,6 +91,44 @@ func TestTransportSendsExitErrorAfterLastMessage(t *testing.T) {
 	}
 }
 
+// TestCloseFailsPendingInterrupt verifies an Interrupt in flight when the
+// transport closes returns control.ErrProtocolClosed at once, instead of
+// waiting out its 5 second timeout for a CLI that never answers it.
+func TestCloseFailsPendingInterrupt(t *testing.T) {
+	ctx, cancel := setupTransportTestContext(t, 30*time.Second)
+	defer cancel()
+
+	eventLog := setMockEventLog(t)
+	transport := setupTransportForTest(t, newTransportMockCLIMode(t, mockModeIgnoreInterrupt))
+	t.Cleanup(func() { _ = transport.Close() })
+	connectTransportSafely(ctx, t, transport)
+
+	result := make(chan error, 1)
+	go func() { result <- transport.Interrupt(ctx) }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, ok := readMockEvents(t, eventLog)[mockEventInterrupt]; ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the CLI never received the interrupt request")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	assertNoTransportError(t, transport.Close())
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, control.ErrProtocolClosed) {
+			t.Errorf("Interrupt error = %v, want control.ErrProtocolClosed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Interrupt still pending 2s after Close")
+	}
+}
+
 // TestTransportConnectFailureReapsProcess verifies that a failed Connect
 // returns and reaps the CLI even with no context deadline. Connect only
 // returns after teardown observed the sole cmd.Wait completing.

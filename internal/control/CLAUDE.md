@@ -19,6 +19,7 @@ control/
 ├── types.go               # Request/Response types, Initialize handshake
 ├── types_hook.go          # Hook event types, HookMatcher, HookCallback
 ├── protocol_test.go          # Protocol unit tests
+├── close_test.go             # Close wakes pending requests, no request after Close
 ├── protocol_bench_test.go    # Performance benchmarks
 ├── hooks_test.go             # Hook system tests
 ├── mcp_test.go               # MCP server tests
@@ -43,6 +44,7 @@ control/
 - Thread safety: All state access protected by mutex
 - Timeout handling: Default 60s init timeout, configurable via `WithInitTimeout`
 - Hook registration: `RegisterHook()` returns callback ID for later removal
+- Close and pending requests: `Close()` closes `closedCh`, which wakes every `SendControlRequest` waiting for its response with `ErrProtocolClosed`; a request sent after `Close()` returns `ErrProtocolClosed` without being written (checked under `p.mu` where the request is registered, so no request can register after Close); Python only fails pending requests when its reader ends with an error, so this is a Go lifecycle guarantee
 - Init error channel: `initErrChan chan error` (buffered, size 1) in Protocol struct; `HandleControlInitErr()` sends non-blocking to unblock `SendControlRequest()` when CLI fails before handshake (e.g., invalid session ID); reads `p.initialized` under lock first and is a no-op after `Initialize()` succeeds - prevents the post-init stdoutDone watcher from poisoning `initErrChan` for later `SendControlRequest` calls (e.g. `SetModel`/`GetMcpStatus` on a long-lived client)
 - Constructor pattern: `NewGetMcpStatusRequest()` sets `Subtype: SubtypeGetMcpStatus`; follows same pattern as `NewPermissionResultAllow/Deny`; use constructors for request types with fixed subtype values
 - SubtypeGetMcpStatus = `"mcp_status"` (wire value from Python SDK query.py); included in parity table in `testSubtypeConstants`

@@ -73,6 +73,7 @@ const (
 	mockModeOrphanStdout        = "orphan_stdout"
 	mockModeHoldStdout          = "hold_stdout"
 	mockModeServerInfo          = "server_info"
+	mockModeIgnoreInterrupt     = "ignore_interrupt"
 )
 
 // Event names written to the mock event log.
@@ -80,6 +81,8 @@ const (
 	mockEventEOF     = "EOF"
 	mockEventSIGTERM = "SIGTERM"
 	mockEventExit    = "EXIT"
+	// mockEventInterrupt is logged when ignore_interrupt receives an interrupt request.
+	mockEventInterrupt = "INTERRUPT"
 )
 
 // runMockCLI dispatches to per-mode handlers. Kept thin so gocyclo stays low.
@@ -355,6 +358,8 @@ func runShutdownMock(mode string) {
 		runMockSlowExitAfterEOF()
 	case mockModeBurstErrorResult:
 		runMockBurstErrorResult()
+	case mockModeIgnoreInterrupt:
+		runMockIgnoreInterrupt()
 	case mockModeStopReading:
 		answerInitialize()
 		// Never read stdin again, so the SDK's stdin writes block once the pipe is full.
@@ -440,6 +445,25 @@ func runMockBurstErrorResult() {
 	}
 	fmt.Println(mockErrorResult)
 	os.Exit(1)
+}
+
+// runMockIgnoreInterrupt answers every control request except an interrupt,
+// which it logs and leaves unanswered. It exits when stdin closes.
+func runMockIgnoreInterrupt() {
+	answerInitialize()
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !isControlRequest(line) {
+			continue
+		}
+		if strings.Contains(line, `"subtype":"interrupt"`) {
+			logMockEvent(mockEventInterrupt)
+			continue
+		}
+		fmt.Println(buildControlResponse(extractRequestID(line)))
+	}
 }
 
 // runMockIgnoreSIGTERM logs and ignores SIGTERM, so only SIGKILL ends it.
