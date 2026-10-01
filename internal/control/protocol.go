@@ -278,6 +278,9 @@ func (p *Protocol) SendControlRequest(ctx context.Context, request any, timeout 
 
 	select {
 	case response := <-responseChan:
+		if response.failure != nil {
+			return nil, response.failure
+		}
 		if response.Subtype == ResponseSubtypeError {
 			return nil, fmt.Errorf("control request error: %s", response.Error)
 		}
@@ -311,6 +314,24 @@ func (p *Protocol) HandleControlInitErr(err error) {
 	select {
 	case p.initErrChan <- err:
 	default:
+	}
+}
+
+// FailPendingRequests fails every control request still waiting for a response
+// with err, because the CLI's stream ended with that error (Python: the reader
+// sets its error on every pending request). A request still waiting for the
+// initialize handshake is left alone: HandleControlInitErr already fails it.
+func (p *Protocol) FailPendingRequests(err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if !p.initialized {
+		return
+	}
+	for requestID, responseChan := range p.pendingRequests {
+		select {
+		case responseChan <- &Response{RequestID: requestID, failure: err}:
+		default:
+		}
 	}
 }
 
