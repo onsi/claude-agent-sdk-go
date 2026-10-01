@@ -613,6 +613,25 @@ func TestReceiveResponseExitErrorBelongsToNextCall(t *testing.T) {
 	}
 }
 
+// An iterator blocked in next while another sharing the reader sets the error
+// aside must still return that error when msgChan closes under it.
+func TestStreamReaderEndOfStreamReturnsPendingError(t *testing.T) {
+	exitErr := NewProcessError("Claude Code process exited unexpectedly", 1, "")
+	msgChan := make(chan Message)
+	close(msgChan)
+	errChan := make(chan error)
+	close(errChan)
+	stream := newStreamReader(msgChan, errChan)
+
+	stream.setPending(exitErr)
+	if err := stream.endOfStream(); err != exitErr {
+		t.Fatalf("endOfStream() = %v, want the pending exit error", err)
+	}
+	if err := stream.endOfStream(); !errors.Is(err, ErrNoMoreMessages) {
+		t.Fatalf("endOfStream() after the error was taken = %v, want ErrNoMoreMessages", err)
+	}
+}
+
 // TestClientReceiveMessages tests message reception through client channels
 // Covers T137: Client Message Reception
 func TestClientReceiveMessages(t *testing.T) {
