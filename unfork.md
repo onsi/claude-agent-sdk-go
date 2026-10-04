@@ -7,7 +7,78 @@ the fork at `82c270f` through a `replace` in `go.mod`.
 `onsi/claude-agent-sdk-go` under their `feature/…` names). Comments posted on #149, #144, #147, #145,
 #146 and #143, with the PR numbers filled in. Re-measured the dropped interrupt on CLI 2.1.286 (later turns 7/7 dropped, first turns 4/4 honoured) and filed it as anthropics/claude-code#98713.
 
-## Picking this up
+## 2026-10-04: all six PRs merged and released in v0.9.0, so the unfork is unblocked
+
+**Done 2026-10-04:** pedagogue `6efa97b2` requires v0.9.0 with no `replace`, and every gate passed. The fork is now unused. Archiving it is the owner's call.
+
+- **What severity1 did:**
+  - Merged #164–#169 on 2026-10-04, rebasing each one.
+  - Filed his reviewers' smaller findings as #175–#180, fixed them in #185, and tagged **v0.9.0** (`cf58dbc`).
+  - His reply on #149 lists what he changed beyond conflict resolution. Nothing in it asks anything of us.
+- **anthropics/claude-code#98713:** triaged (`bug`, `has repro`, `area:agent-sdk`), no comments yet.
+
+### Evaluation
+
+Measured with a stub CLI and no API calls. Pedagogue was built in a scratch worktree of `d27e0167`.
+
+- **Our six PRs landed with their behaviour intact.** Checked with `git range-diff` of each branch against its landed commit. Every test we added is present. The only substantive edits are improvements:
+  - D also routes the v0.8.0 buffer-limit `*JSONDecodeError` through `endStreamWithError`.
+  - E's `StopTask` fails fast through `liveTransport()`.
+- **The upstream suite passes at v0.9.0:** `go test -race ./...`, 7/7 packages.
+- **The probes, re-run at v0.9.0:**
+
+| Probe | v0.9.0 | Before |
+|---|---|---|
+| Exit-error race, 100 runs each of `Query` and `ReceiveResponse` | 0 lost results, 0 lost exit errors | `c3bc12b`: 24 lost results, 1–3 lost exit errors |
+| CLI killed with SIGKILL | `Done` closes at once; every call fails fast with a `*ConnectionError` wrapping the `*ProcessError` | — |
+| A descendant holds stdout: `Done` | 209 ms | — |
+| A descendant holds stdout: `Disconnect` | 1–2 ms | 5 s |
+| `Interrupt` racing `Disconnect` | 203 ms, returns `ErrProtocolClosed` | 5 s |
+
+- **Pedagogue builds and vets against v0.9.0** with the prototype applied.
+  - One conflict: `ProbeModels` now goes through `newCLIClient`, the OS-sandbox wrapper from §407.
+  - Server suite 1320/1320, and every other non-harness suite is green.
+  - Harness 1170/1173. The 3 failures are the known decorator caveat: `mcp_correction_test.go` downcasts the client to `*mcpStatusFakeClient`.
+  - The diff is `unfork-drafts/pedagogue-v090.diff`.
+
+### Upstream changes since `c3bc12b`, and what each means for pedagogue
+
+| Change | Pedagogue |
+|---|---|
+| **v0.9.0: `WithMaxThinkingTokens(n)` now emits `--max-thinking-tokens n`.** The fork and every earlier release had the flag commented out. | **The one real behaviour change.** `harness.go` passes `WithMaxThinkingTokens(6000)` on every teaching session, and it has never reached the wire. On v0.9.0 it would start capping thinking, unmeasured; thinking is 41% of teacher output tokens (`design/latency.md`). **Drop that option at the unfork.** Keep `WithIncludePartialMessages`, adjust the thinking-budget specs in `harness_test.go`, and evaluate `WithThinking` as its own backlog item. |
+| v0.8.0: when `WithSettingSources` is never called, no `--setting-sources` flag is sent, so the CLI loads all settings and CLAUDE.md. Called with no arguments, it sends `--setting-sources=`. | No effect. All four CLI spawn sites (`harness.go`, `librarian.go`, `models.go`, `oneshot.go`) go through `isolate()` or `inhabit()`, and both call it. The isolation specs pass. |
+| #185 (#175): `Err()` read during `Disconnect` reports the teardown exit (`exited (exit status 0)`, or `*ProcessError(-1)` after SIGTERM) instead of "not connected". | No effect. The harness and the librarian both cancel their ctx before `Disconnect`, and `receive`'s `ended` returns on `ctx.Err()` before reading `Err()`. |
+| #182: unknown message types are skipped, and unknown content blocks are dropped. Only text, thinking, tool_use, tool_result, server_tool_use and advisor_tool_result are kept. | Better than the fork, which errored. `redacted_thinking` and similar blocks now vanish silently; pedagogue matches none of them. |
+| #180: not-connected errors are a `*ConnectionError` wrapping `ErrNotConnected`. | No effect; pedagogue doesn't match that text. |
+| #170: `CLAUDECODE` is removed from the child's env, and `CLAUDE_AGENT_SDK_VERSION` is added. | No effect. |
+| `StopTask` added to `Client` and `Transport`; `ErrProtocolClosed` exported. | No effect. Pedagogue's fakes already had `StopTask` from the fork, and the build passes. |
+| #176: a buffered message now always beats a cancelled ctx in `Next` (1000/1000, against 498/1000 before). | No effect; pedagogue's loops select on `ctx.Done()` themselves. |
+
+### Plan
+
+Steps 1–8 of "Pedagogue-side changes" below still apply, against **v0.9.0**, with these amendments:
+
+- **Step 1:** `require github.com/severity1/claude-agent-sdk-go v0.9.0` and drop the `replace`.
+- **New step: drop `WithMaxThinkingTokens`,** per the first row of the table above.
+- **Step 3: build the interrupt re-send as inline state in the harness and the librarian, not as the decorator.** The decorator is what breaks the three `mcp_correction_test.go` specs, and it would have to forward every optional interface forever.
+- **Step 2:** `ProbeModels` keeps `newCLIClient(isolate())`, so the probe stays inside the sandbox.
+- **Step 6:** the #163 checks are unchanged: `Close` can take about 15 s in the worst case, and the macapp quit path must tolerate that.
+- **TODO §394:** change "blocked on severity1" to ready, then close it once the gates pass.
+
+### Upstream follow-ups (drafted, not posted; none blocks us)
+
+1. **Optional, worth one issue: `Client.Err()` reports our own `Disconnect` as the exit reason.**
+   - Measured 30/30: `*ConnectionError: … exited (exit status 0)`.
+   - When SIGTERM was needed it reports `*ProcessError(-1)`, which reads as a crash.
+   - The stream path already suppresses teardown exits through `isClosing`; `Err()` doesn't.
+   - Suggested fix: mark the client as closing under `watchMu` before `transport.Close()`, so `Err()` returns `ErrNotConnected` from the start of `Disconnect`. That also closes the window after `Close` returns, where `Err()` gives the transport's plain `transport not connected`.
+   - Python has no analogue of `Err()`, so the parity argument is weak. Frame it as consistency with `isClosing`.
+2. **Skip these two:**
+   - Buffered messages beating a cancelled ctx. Minor, and arguably intended.
+   - `Disconnect` leaving `watch` set when `transport.Close()` fails. Found by reading the code; not measured.
+3. **A thank-you on #149** once pedagogue is on v0.9.0, noting that the fork is archived.
+
+## Picking this up (as of 2026-10-01; the section above supersedes it)
 
 **State (2026-10-01):** all six PRs and the issue comments are posted; the next move is severity1's.
 To pick this up:

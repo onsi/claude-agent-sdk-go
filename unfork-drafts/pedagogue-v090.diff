@@ -1,0 +1,370 @@
+diff --git a/go.mod b/go.mod
+index 2b5b5aa5..3fe6d893 100644
+--- a/go.mod
++++ b/go.mod
+@@ -15,7 +15,7 @@ require (
+ 	github.com/onsi/gomega v1.43.1
+ 	github.com/onsi/say v1.2.0
+ 	github.com/posthog/posthog-go v1.25.2
+-	github.com/severity1/claude-agent-sdk-go v0.6.22
++	github.com/severity1/claude-agent-sdk-go v0.9.0
+ 	github.com/yuin/goldmark v1.8.5
+ 	go.yaml.in/yaml/v3 v3.0.5
+ 	golang.org/x/term v0.46.0
+@@ -62,5 +62,3 @@ require (
+ 	golang.org/x/sys v0.48.0 // indirect
+ 	google.golang.org/protobuf v1.36.11 // indirect
+ )
+-
+-replace github.com/severity1/claude-agent-sdk-go => github.com/onsi/claude-agent-sdk-go v0.6.23-0.20260922214846-82c270f8cb2a
+diff --git a/go.sum b/go.sum
+index 19c7bc7c..a1a40ca3 100644
+--- a/go.sum
++++ b/go.sum
+@@ -98,8 +98,6 @@ github.com/mfridman/tparse v0.18.0 h1:wh6dzOKaIwkUGyKgOntDW4liXSo37qg5AXbIhkMV3v
+ github.com/mfridman/tparse v0.18.0/go.mod h1:gEvqZTuCgEhPbYk/2lS3Kcxg1GmTxxU7kTC8DvP0i/A=
+ github.com/onsi/biloba v0.17.0 h1:qT7xSqotKOkavpKNgu5jMHjRhKGWSwZBQV1VuoTDSWo=
+ github.com/onsi/biloba v0.17.0/go.mod h1:zxoXEbnnp4YKo7KpQnHhAWmlR4un/+JtkFq99+nOzSE=
+-github.com/onsi/claude-agent-sdk-go v0.6.23-0.20260922214846-82c270f8cb2a h1:DQ8IajkR6ofn3zGk80029ctjUDh1avcPnE/u07uBDu8=
+-github.com/onsi/claude-agent-sdk-go v0.6.23-0.20260922214846-82c270f8cb2a/go.mod h1:1581ih7J7T89idAMBfrtVAcQfNGkFWUtWcnQ1O9efYA=
+ github.com/onsi/ginkgo/v2 v2.33.0 h1:C8gBA6Uc2ZEubiV+SXiu5tZnMTwEmXHgkJwGozKtZf8=
+ github.com/onsi/ginkgo/v2 v2.33.0/go.mod h1:+aXOY+vzZ5mu2iI2HpTZUPmM//oQfsNFX6gU9kNcA44=
+ github.com/onsi/gomega v1.43.1 h1:vGIPFuYrIO6/0Z09s0I0QQQgFchiX4+tb1re3MScJYo=
+@@ -114,6 +112,8 @@ github.com/posthog/posthog-go v1.25.2 h1:Foyy3JhlcXDndZH3Ho7HfXio0cPfMni2T+ildNq
+ github.com/posthog/posthog-go v1.25.2/go.mod h1:rN0C9Urenhytgo3KQ/QVorGkyGfpouquDTSs2Ujzr+g=
+ github.com/rogpeppe/go-internal v1.13.1 h1:KvO1DLK/DRN07sQ1LQKScxyZJuNnedQ5/wKSR38lUII=
+ github.com/rogpeppe/go-internal v1.13.1/go.mod h1:uMEvuHeurkdAXX61udpOXGD/AzZDWNMNyH2VO9fmH0o=
++github.com/severity1/claude-agent-sdk-go v0.9.0 h1:nU/SL3eiuAxc2apg5NYZWojKzj63t6iKDMFhFWXNHcA=
++github.com/severity1/claude-agent-sdk-go v0.9.0/go.mod h1:1581ih7J7T89idAMBfrtVAcQfNGkFWUtWcnQ1O9efYA=
+ github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
+ github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
+ github.com/tidwall/gjson v1.18.0 h1:FIDeeyB800efLX89e5a8Y0BNH+LOngJyGrIWxG2FKQY=
+diff --git a/internal/harness/harness.go b/internal/harness/harness.go
+index 94988634..2707b734 100644
+--- a/internal/harness/harness.go
++++ b/internal/harness/harness.go
+@@ -487,6 +487,7 @@ func (h *Harness) Start(ctx context.Context) error {
+ 	if err != nil {
+ 		return fmt.Errorf("build agent client: %w", err)
+ 	}
++	c = withPickup(c)
+ 	runCtx, cancel := context.WithCancel(ctx)
+ 	if err := c.Connect(runCtx); err != nil {
+ 		cancel()
+diff --git a/internal/harness/librarian.go b/internal/harness/librarian.go
+index adc64504..536f6506 100644
+--- a/internal/harness/librarian.go
++++ b/internal/harness/librarian.go
+@@ -453,6 +453,7 @@ func (l *Librarian) Start(ctx context.Context) error {
+ 	if err != nil {
+ 		return fmt.Errorf("build librarian client: %w", err)
+ 	}
++	c = withPickup(c)
+ 	runCtx, cancel := context.WithCancel(ctx)
+ 	if err := c.Connect(runCtx); err != nil {
+ 		cancel()
+diff --git a/internal/harness/models.go b/internal/harness/models.go
+index 31fa9deb..d51354cc 100644
+--- a/internal/harness/models.go
++++ b/internal/harness/models.go
+@@ -2,11 +2,20 @@ package harness
+ 
+ import (
+ 	"context"
++	"encoding/json"
+ 	"strings"
+-
+-	claudecode "github.com/severity1/claude-agent-sdk-go"
+ )
+ 
++// ModelInfo is one model the CLI offers, as its initialize response reports it.
++type ModelInfo struct {
++	Value                 string   `json:"value"`
++	ResolvedModel         string   `json:"resolvedModel,omitempty"`
++	DisplayName           string   `json:"displayName,omitempty"`
++	Description           string   `json:"description,omitempty"`
++	SupportsEffort        bool     `json:"supportsEffort,omitempty"`
++	SupportedEffortLevels []string `json:"supportedEffortLevels,omitempty"`
++}
++
+ // ModelFamily strips the CLI's bracketed variant suffix: `opus[1m]` is a variant of `opus`.
+ func ModelFamily(value string) string {
+ 	if i := strings.IndexByte(value, '['); i >= 0 {
+@@ -18,7 +27,7 @@ func ModelFamily(value string) string {
+ // ProbeModels asks the installed CLI which models it offers, from the initialize handshake
+ // alone — no turn, so no API call. The roster is undocumented, which is why a failure here
+ // must only ever cost the caller its enrichment, never a working model.
+-func ProbeModels(ctx context.Context) ([]claudecode.ModelInfo, error) {
++func ProbeModels(ctx context.Context) ([]ModelInfo, error) {
+ 	client, err := newCLIClient(isolate())
+ 	if err != nil {
+ 		return nil, err
+@@ -27,5 +36,17 @@ func ProbeModels(ctx context.Context) ([]claudecode.ModelInfo, error) {
+ 		return nil, err
+ 	}
+ 	defer func() { _ = client.Disconnect() }()
+-	return client.SupportedModels(ctx)
++	info, err := client.GetServerInfo(ctx)
++	if err != nil {
++		return nil, err
++	}
++	raw, err := json.Marshal(info["models"])
++	if err != nil {
++		return nil, err
++	}
++	var models []ModelInfo
++	if err := json.Unmarshal(raw, &models); err != nil {
++		return nil, err
++	}
++	return models, nil
+ }
+diff --git a/internal/harness/pickup.go b/internal/harness/pickup.go
+new file mode 100644
+index 00000000..8acc1b6b
+--- /dev/null
++++ b/internal/harness/pickup.go
+@@ -0,0 +1,88 @@
++package harness
++
++import (
++	"context"
++	"sync"
++
++	claudecode "github.com/severity1/claude-agent-sdk-go"
++)
++
++// The CLI drops an interrupt that arrives after a user message was written but before it picked
++// that message up, then runs the turn in full. A stop issued in that window is sent once more
++// when the turn announces itself with its init message.
++type pickupClient struct {
++	agentClient
++	mu      sync.Mutex
++	pending bool
++	owed    bool
++}
++
++func withPickup(c agentClient) agentClient { return &pickupClient{agentClient: c} }
++
++func (p *pickupClient) arm() {
++	p.mu.Lock()
++	if !p.pending {
++		p.pending, p.owed = true, false
++	}
++	p.mu.Unlock()
++}
++
++func (p *pickupClient) Query(ctx context.Context, prompt string) error {
++	p.arm()
++	return p.agentClient.Query(ctx, prompt)
++}
++
++func (p *pickupClient) QueryStream(ctx context.Context, messages <-chan claudecode.StreamMessage) error {
++	p.arm()
++	return p.agentClient.QueryStream(ctx, messages)
++}
++
++func (p *pickupClient) Interrupt(ctx context.Context) error {
++	p.mu.Lock()
++	if p.pending {
++		p.owed = true
++	}
++	p.mu.Unlock()
++	return p.agentClient.Interrupt(ctx)
++}
++
++func (p *pickupClient) ReceiveMessages(ctx context.Context) <-chan claudecode.Message {
++	in := p.agentClient.ReceiveMessages(ctx)
++	out := make(chan claudecode.Message)
++	go func() {
++		defer close(out)
++		for msg := range in {
++			p.observe(ctx, msg)
++			select {
++			case out <- msg:
++			case <-ctx.Done():
++				return
++			}
++		}
++	}()
++	return out
++}
++
++func (p *pickupClient) observe(ctx context.Context, msg claudecode.Message) {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++	switch m := msg.(type) {
++	case *claudecode.SystemMessage:
++		if m.Subtype != "init" || !p.pending {
++			return
++		}
++		if p.owed {
++			go func() { _ = p.agentClient.Interrupt(ctx) }()
++		}
++		p.pending, p.owed = false, false
++	case *claudecode.ResultMessage:
++		p.pending, p.owed = false, false
++	}
++}
++
++func (p *pickupClient) GetMcpStatus(ctx context.Context) (*claudecode.McpStatusResponse, error) {
++	if sc, ok := p.agentClient.(mcpStatusClient); ok {
++		return sc.GetMcpStatus(ctx)
++	}
++	return nil, nil
++}
+diff --git a/internal/harness/stub_cli_test.go b/internal/harness/stub_cli_test.go
+index 88fc0a9d..97ac5f3d 100644
+--- a/internal/harness/stub_cli_test.go
++++ b/internal/harness/stub_cli_test.go
+@@ -85,6 +85,10 @@ done
+ const orphanedStdoutStub = `
+ hold=%q
+ touch "$hold"
++IFS= read -r line
++req_id=$(printf '%%s' "$line" | grep -o '"request_id":"[^"]*"' | cut -d'"' -f4)
++printf '{"type":"control_response","response":{"subtype":"success","request_id":"%%s","response":{}}}\n' "$req_id"
++sleep 0.3
+ { while [ -e "$hold" ]; do sleep 0.05; done; } </dev/null &
+ exit 3
+ `
+diff --git a/internal/server/modelroster.go b/internal/server/modelroster.go
+index 695a8d03..64dc60ea 100644
+--- a/internal/server/modelroster.go
++++ b/internal/server/modelroster.go
+@@ -5,18 +5,18 @@ import (
+ 	"sync"
+ 	"time"
+ 
+-	claudecode "github.com/severity1/claude-agent-sdk-go"
++	"github.com/onsi/pedagogue/internal/harness"
+ )
+ 
+ // modelRoster enriches the curated families with what the installed CLI says about them. It
+ // can only ever add: a family the probe omits, or a probe that fails, leaves the bare alias,
+ // which the CLI resolves on its own.
+ type modelRoster struct {
+-	probe func(context.Context) ([]claudecode.ModelInfo, error)
++	probe func(context.Context) ([]harness.ModelInfo, error)
+ 	log   *logger
+ 
+ 	mu       sync.Mutex
+-	byFamily map[string]claudecode.ModelInfo
++	byFamily map[string]harness.ModelInfo
+ 	probedAt time.Time
+ 	probing  bool
+ }
+@@ -31,7 +31,7 @@ const modelRosterProbeTimeout = 30 * time.Second
+ // The CLI spells the long-context variant of a family as a suffix on its alias.
+ const longContextSuffix = "[1m]"
+ 
+-func newModelRoster(probe func(context.Context) ([]claudecode.ModelInfo, error), log *logger) *modelRoster {
++func newModelRoster(probe func(context.Context) ([]harness.ModelInfo, error), log *logger) *modelRoster {
+ 	return &modelRoster{probe: probe, log: log}
+ }
+ 
+@@ -67,8 +67,8 @@ func (r *modelRoster) refreshIfStale() {
+ }
+ 
+ // Prefers a family's long-context variant when the CLI offers one on this account.
+-func pickFamilyRows(rows []claudecode.ModelInfo) map[string]claudecode.ModelInfo {
+-	out := map[string]claudecode.ModelInfo{}
++func pickFamilyRows(rows []harness.ModelInfo) map[string]harness.ModelInfo {
++	out := map[string]harness.ModelInfo{}
+ 	for _, id := range curatedModelIDs() {
+ 		for _, value := range []string{id + longContextSuffix, id} {
+ 			if row, ok := findRow(rows, value); ok {
+@@ -80,18 +80,18 @@ func pickFamilyRows(rows []claudecode.ModelInfo) map[string]claudecode.ModelInfo
+ 	return out
+ }
+ 
+-func findRow(rows []claudecode.ModelInfo, value string) (claudecode.ModelInfo, bool) {
++func findRow(rows []harness.ModelInfo, value string) (harness.ModelInfo, bool) {
+ 	for _, row := range rows {
+ 		if row.Value == value {
+ 			return row, true
+ 		}
+ 	}
+-	return claudecode.ModelInfo{}, false
++	return harness.ModelInfo{}, false
+ }
+ 
+-func (r *modelRoster) row(id string) (claudecode.ModelInfo, bool) {
++func (r *modelRoster) row(id string) (harness.ModelInfo, bool) {
+ 	if r == nil {
+-		return claudecode.ModelInfo{}, false
++		return harness.ModelInfo{}, false
+ 	}
+ 	r.refreshIfStale()
+ 	r.mu.Lock()
+diff --git a/internal/server/modelroster_test.go b/internal/server/modelroster_test.go
+index ae7dd76c..47a7cdf1 100644
+--- a/internal/server/modelroster_test.go
++++ b/internal/server/modelroster_test.go
+@@ -7,11 +7,11 @@ import (
+ 
+ 	gk "github.com/onsi/ginkgo/v2"
+ 	. "github.com/onsi/gomega"
+-	claudecode "github.com/severity1/claude-agent-sdk-go"
++	"github.com/onsi/pedagogue/internal/harness"
+ )
+ 
+ var _ = gk.Describe("the CLI's model roster", func() {
+-	cliRoster := []claudecode.ModelInfo{
++	cliRoster := []harness.ModelInfo{
+ 		{Value: "default", ResolvedModel: "claude-opus-5-5[1m]", SupportsEffort: true},
+ 		{Value: "opus[1m]", ResolvedModel: "claude-opus-5-5[1m]", Description: "Opus 5.5 with 1M context", SupportsEffort: true},
+ 		{Value: "sonnet", ResolvedModel: "claude-sonnet-5", Description: "Sonnet 5", SupportsEffort: true},
+@@ -20,9 +20,9 @@ var _ = gk.Describe("the CLI's model roster", func() {
+ 	}
+ 
+ 	var probes atomic.Int32
+-	read := func(rows []claudecode.ModelInfo, err error) *modelRoster {
++	read := func(rows []harness.ModelInfo, err error) *modelRoster {
+ 		probes.Store(0)
+-		r := newModelRoster(func(context.Context) ([]claudecode.ModelInfo, error) {
++		r := newModelRoster(func(context.Context) ([]harness.ModelInfo, error) {
+ 			probes.Add(1)
+ 			return rows, err
+ 		}, nil)
+diff --git a/internal/server/server.go b/internal/server/server.go
+index 9da15c94..982ea9ed 100644
+--- a/internal/server/server.go
++++ b/internal/server/server.go
+@@ -24,7 +24,6 @@ import (
+ 	"github.com/onsi/pedagogue/internal/skillconfig"
+ 	"github.com/onsi/pedagogue/internal/vault"
+ 	"github.com/onsi/pedagogue/internal/wiretiming"
+-	claudecode "github.com/severity1/claude-agent-sdk-go"
+ )
+ 
+ var ErrNoAgent = errors.New("no agent configured for this session")
+@@ -70,7 +69,7 @@ type Config struct {
+ 	// Nil is supported: a failed turn is then classified from the CLI's error text alone.
+ 	AuthProbe AuthProbe
+ 	// Nil offers the bare aliases with no hint, as every test and the whole e2e suite do.
+-	ModelProbe           func(context.Context) ([]claudecode.ModelInfo, error)
++	ModelProbe           func(context.Context) ([]harness.ModelInfo, error)
+ 	DiscoveredMCPServers []mcpconfig.Server
+ 	// Discovered once at boot, so a session's capability set is a stable snapshot, not something that can move between a settings GET and a session birth.
+ 	DiscoveredSkills skillconfig.Result
+diff --git a/internal/server/store.go b/internal/server/store.go
+index 2ca3f127..3192616b 100644
+--- a/internal/server/store.go
++++ b/internal/server/store.go
+@@ -15,7 +15,6 @@ import (
+ 	"github.com/onsi/pedagogue/internal/mcpconfig"
+ 	"github.com/onsi/pedagogue/internal/skillconfig"
+ 	"github.com/onsi/pedagogue/internal/vault"
+-	claudecode "github.com/severity1/claude-agent-sdk-go"
+ )
+ 
+ // A session is a working cache of the recursive tree parsed from the journey's flat files; a
+@@ -229,7 +228,7 @@ func (st *Store) applyAuthProbe(s *Session) { s.authProbe = st.authProbe }
+ func (st *Store) applyModels(s *Session) { s.models = st.models }
+ 
+ // Kicks the first probe at once, so the picker usually has the roster before anyone opens it.
+-func (st *Store) configureModelProbe(probe func(context.Context) ([]claudecode.ModelInfo, error)) {
++func (st *Store) configureModelProbe(probe func(context.Context) ([]harness.ModelInfo, error)) {
+ 	st.mu.Lock()
+ 	st.models = newModelRoster(probe, st.log)
+ 	st.mu.Unlock()
