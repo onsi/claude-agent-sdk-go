@@ -218,7 +218,7 @@ func TestCloseDoesNotWaitForDescendantHoldingOutput(t *testing.T) {
 		mode    string
 		options *shared.Options
 	}{
-		{"descendant_holds_stdout", mockModeOrphanStdout, &shared.Options{}},
+		{"descendant_holds_stdout", mockModeCloseOrphanStdout, &shared.Options{}},
 		{
 			"descendant_holds_stdout_and_stderr_with_callback",
 			mockModeOrphanOutput,

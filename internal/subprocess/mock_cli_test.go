@@ -78,7 +78,7 @@ const (
 	mockModeIgnoreInterrupt     = "ignore_interrupt"
 	mockModeExitOnInterrupt     = "exit_on_interrupt"
 	mockModeOverflowOnInterrupt = "overflow_on_interrupt"
-	mockModeOrphanStdout        = "orphan_stdout"
+	mockModeCloseOrphanStdout   = "close_orphan_stdout"
 	mockModeOrphanOutput        = "orphan_stdout_and_stderr"
 	mockModeOrphanHolder        = "orphan_holder"
 )
@@ -371,7 +371,7 @@ func runShutdownMock(mode string) {
 		runMockOnInterrupt(func() { os.Exit(1) })
 	case mockModeOverflowOnInterrupt:
 		runMockOnInterrupt(func() { fmt.Println(strings.Repeat("x", overflowLineSize)) })
-	case mockModeOrphanStdout:
+	case mockModeCloseOrphanStdout:
 		runMockOrphan(false)
 	case mockModeOrphanOutput:
 		runMockOrphan(true)
