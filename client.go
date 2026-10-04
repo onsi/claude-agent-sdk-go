@@ -716,13 +716,9 @@ func (c *ClientImpl) StopTask(ctx context.Context, taskID string) error {
 		return ctx.Err()
 	}
 
-	c.mu.RLock()
-	connected := c.connected
-	transport := c.transport
-	c.mu.RUnlock()
-
-	if !connected || transport == nil {
-		return fmt.Errorf("client not connected")
+	transport, err := c.liveTransport()
+	if err != nil {
+		return err
 	}
 
 	return transport.StopTask(ctx, taskID)

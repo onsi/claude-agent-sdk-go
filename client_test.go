@@ -1139,6 +1139,7 @@ func TestClientCallsFailAfterProcessExit(t *testing.T) {
 		{"SetPermissionMode", func(c Client) error { return c.SetPermissionMode(ctx, PermissionModeAcceptEdits) }},
 		{"RewindFiles", func(c Client) error { return c.RewindFiles(ctx, "uuid-1") }},
 		{"GetMcpStatus", func(c Client) error { _, err := c.GetMcpStatus(ctx); return err }},
+		{"StopTask", func(c Client) error { return c.StopTask(ctx, "task-1") }},
 	}
 
 	for _, test := range calls {
